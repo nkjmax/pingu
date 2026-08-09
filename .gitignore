@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Local database
+matches.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
