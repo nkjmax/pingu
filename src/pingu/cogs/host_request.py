@@ -11,6 +11,8 @@ from discord.ext import commands
 from pingu import config
 import pingu.db.host_requests as requests_db
 from pingu.views.hosting_views import HostRequestChoiceView
+from pingu.cogs.hosting import parse_class_ordered_roster
+from pingu.embeds import build_roster_icon_lines, SIXS_DIVISIONS
 
 
 class HostRequestCog(commands.Cog):
@@ -19,7 +21,7 @@ class HostRequestCog(commands.Cog):
 
     @app_commands.command(name="host-request", description="Host a fresh PUG, or request a mix (hosters will review).")
     async def host_request(self, interaction: discord.Interaction):
-        view = HostRequestChoiceView()
+        view = HostRequestChoiceView(self.bot)
         await interaction.response.send_message(
             "What would you like to do?", view=view, ephemeral=True
         )
@@ -38,18 +40,30 @@ class HostRequestCog(commands.Cog):
             return  # not a request thread, already resolved, or roster already captured
         if message.author.id != request["requester_id"]:
             return  # only the requester's ping message counts
-        if not message.mentions:
+
+        # Same parsing hosters use for their own roster -- comma-separated,
+        # positionally matched to class order when displayed.
+        roster_str = parse_class_ordered_roster(message.content)
+        if not roster_str:
             return
 
-        roster_ids = " ".join(str(m.id) for m in message.mentions)
-        await requests_db.set_roster(request["id"], roster_ids)
+        await requests_db.set_roster(request["id"], roster_str)
 
-        roster_pings = " ".join(m.mention for m in message.mentions)
+        # Same treatment a hoster's roster message gets: delete it, replace
+        # with the icon-formatted class-by-class display.
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        is_sixs = request["division"] in SIXS_DIVISIONS
+        roster_display = build_roster_icon_lines(roster_str, is_sixs=is_sixs)
+
         await message.channel.send(
             f"**Roster for mix request #{request['id']}**\n"
             f"Team: {request['team_name']} | Division: {request['division']} | "
-            f"Map: {request['map_name']} | Server: {request['server'] or 'no preference'}\n"
-            f"Players: {roster_pings}"
+            f"Map: {request['map_name']} | Server: {request['server'] or 'no preference'}\n\n"
+            f"{roster_display}"
         )
 
         if config.HOSTER_ROLE_ID:

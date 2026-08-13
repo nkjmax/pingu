@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS matches (
     team_split          TEXT,
     -- new, additive: mix-request / archival features
     captain_id          INTEGER,
+    captain_role_id     INTEGER,   -- dynamic "{team} Captain" role, deleted on teardown
     category_id         INTEGER,
+    channel_slot        INTEGER,   -- per-team/division "concurrent slot" number, not match_id
     host_request_id     INTEGER REFERENCES host_requests(id)
 );
 """
@@ -178,12 +180,26 @@ async def end_match(match_id):
         await db.commit()
 
 
-async def cancel_match(match_id, cancel_msg_id):
-    delete_at = int(time.time()) + 86400
+async def mark_ended(match_id, cancelled=False):
+    """
+    Used by the immediate-teardown flow -- no in-channel notice tracking,
+    since the channel gets deleted right away and nobody would ever see a
+    delayed notice inside it. Only the ongoing-matches line persists (see
+    set_ongoing_delete_at below).
+    """
     async with connect() as db:
         await db.execute(
-            "UPDATE matches SET ended=1, cancelled=1, cancel_msg_id=?, cancel_delete_at=? WHERE id=?",
-            (cancel_msg_id, delete_at, match_id)
+            "UPDATE matches SET ended=1, cancelled=? WHERE id=?",
+            (1 if cancelled else 0, match_id),
+        )
+        await db.commit()
+
+
+async def clear_ongoing_msg(match_id):
+    async with connect() as db:
+        await db.execute(
+            "UPDATE matches SET ongoing_msg_id=NULL WHERE id=?",
+            (match_id,),
         )
         await db.commit()
 
@@ -195,28 +211,6 @@ async def mark_reminded(match_id, reminder_type):
         await db.commit()
 
 
-async def get_expired_cancel_notices():
-    now = int(time.time())
-    async with connect() as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT * FROM matches
-               WHERE cancelled=1 AND cancel_msg_id IS NOT NULL
-                 AND cancel_delete_at IS NOT NULL AND cancel_delete_at < ?""",
-            (now,)
-        ) as cur:
-            return await cur.fetchall()
-
-
-async def clear_cancel_msg(match_id):
-    async with connect() as db:
-        await db.execute(
-            "UPDATE matches SET cancel_msg_id=NULL, cancel_delete_at=NULL WHERE id=?",
-            (match_id,)
-        )
-        await db.commit()
-
-
 async def get_all_active_matches():
     async with connect() as db:
         db.row_factory = aiosqlite.Row
@@ -224,15 +218,6 @@ async def get_all_active_matches():
             "SELECT * FROM matches WHERE ended=0 AND message_id IS NOT NULL ORDER BY timestamp ASC"
         ) as cur:
             return await cur.fetchall()
-
-
-async def get_active_channel_ids():
-    async with connect() as db:
-        async with db.execute(
-            "SELECT channel_id FROM matches WHERE ended=0 AND message_id IS NOT NULL"
-        ) as cur:
-            rows = await cur.fetchall()
-            return {row[0] for row in rows}
 
 
 async def get_matches_needing_1h_reminder():
@@ -259,50 +244,6 @@ async def get_matches_needing_8h_reminder():
             (now - 8 * 3600,)
         ) as cur:
             return await cur.fetchall()
-
-
-async def set_conclude_msg(match_id, msg_id, channel_id):
-    delete_at = int(time.time()) + 86400
-    async with connect() as db:
-        await db.execute(
-            "UPDATE matches SET conclude_msg_id=?, conclude_delete_at=? WHERE id=?",
-            (msg_id, delete_at, match_id)
-        )
-        await db.commit()
-
-
-async def clear_conclude_msg(match_id):
-    async with connect() as db:
-        await db.execute(
-            "UPDATE matches SET conclude_msg_id=NULL, conclude_delete_at=NULL WHERE id=?",
-            (match_id,)
-        )
-        await db.commit()
-
-
-async def get_expired_conclude_notices():
-    now = int(time.time())
-    async with connect() as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT * FROM matches
-               WHERE ended=1 AND conclude_msg_id IS NOT NULL
-                 AND conclude_delete_at IS NOT NULL AND conclude_delete_at < ?""",
-            (now,)
-        ) as cur:
-            return await cur.fetchall()
-
-
-async def get_conclude_msg_for_channel(channel_id):
-    async with connect() as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT * FROM matches
-               WHERE channel_id=? AND conclude_msg_id IS NOT NULL
-               ORDER BY id DESC LIMIT 1""",
-            (channel_id,)
-        ) as cur:
-            return await cur.fetchone()
 
 
 async def get_active_fresh_pug():
@@ -346,6 +287,39 @@ async def set_captain(match_id, captain_id):
     async with connect() as db:
         await db.execute("UPDATE matches SET captain_id=? WHERE id=?", (captain_id, match_id))
         await db.commit()
+
+
+async def set_captain_role_id(match_id, role_id):
+    async with connect() as db:
+        await db.execute("UPDATE matches SET captain_role_id=? WHERE id=?", (role_id, match_id))
+        await db.commit()
+
+
+async def set_channel_slot(match_id, slot):
+    async with connect() as db:
+        await db.execute("UPDATE matches SET channel_slot=? WHERE id=?", (slot, match_id))
+        await db.commit()
+
+
+async def count_active_by_key(match_type, key_column, key_value):
+    """
+    Counts active (ended=0) matches of a given type sharing a distinguishing
+    key -- team_name for mix, division for opug. Called AFTER the current
+    match row already exists (ended=0 by default), so the count naturally
+    includes it -- the result IS the slot number to assign it (1 if it's
+    the only active one with that key, 2 if there's already one other
+    concurrently active, etc). Once assigned, a match's slot never changes,
+    even as later ones raise the count further.
+    """
+    if key_column not in ("team_name", "division"):
+        raise ValueError(f"unexpected key_column: {key_column}")
+    async with connect() as db:
+        cur = await db.execute(
+            f"SELECT COUNT(*) FROM matches WHERE type=? AND ended=0 AND {key_column}=?",
+            (match_type, key_value),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 1
 
 
 async def set_category_id(match_id, category_id):

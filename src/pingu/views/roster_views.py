@@ -39,7 +39,7 @@ class CaptainReviewView(ui.View):
         return view
 
     async def refresh_options(self):
-        pending = await signups_db.get_signups_by_status(self.match["id"], "pending")
+        pending = await signups_db.get_pending_undecided(self.match["id"])
         options = [
             discord.SelectOption(label=f"{s['username']} — {s['class_name']}", value=str(s["id"]))
             for s in pending[:25]
@@ -84,14 +84,21 @@ class CaptainReviewView(ui.View):
 
 
 class HosterPicksReviewView(ui.View):
-    """Shown when a hoster clicks 'Review captain picks' from the manage panel."""
+    """
+    Shown when a hoster clicks 'Review captain picks'. Grouped by PLAYER,
+    not by individual signup -- a player can carry one accept proposal
+    plus several deny proposals at once (e.g. accept Soldier, deny Pyro
+    and Demo), and selecting them shows that whole picture. The single
+    Confirm button commits everything proposed for that player in one go;
+    'Accept all' does the same across every player still awaiting review.
+    """
 
     def __init__(self, match_id, ui_updater, timeout=600):
         super().__init__(timeout=timeout)
         self.match_id = match_id
         self.ui_updater = ui_updater
-        self.selected_signup_id: int | None = None
-        self._select = ui.Select(placeholder="Select a captain's pick to review", options=[
+        self.selected_user_id: int | None = None
+        self._select = ui.Select(placeholder="Select a player to review", options=[
             discord.SelectOption(label="(loading...)", value="0")
         ])
         self._select.callback = self._on_select
@@ -104,37 +111,55 @@ class HosterPicksReviewView(ui.View):
         return view
 
     async def refresh_options(self):
-        awaiting = await signups_db.get_signups_by_status(self.match_id, "awaiting_hoster")
-        options = [
-            discord.SelectOption(label=f"{s['username']} — {s['class_name']}", value=str(s["id"]))
-            for s in awaiting[:25]
-        ] or [discord.SelectOption(label="Nothing awaiting review", value="0")]
-        self._select.options = options
+        by_player = await roster_service.get_captain_decisions_by_player(self.match_id)
+        options = []
+        for user_id, entry in list(by_player.items())[:25]:
+            parts = []
+            if entry["accept"]:
+                parts.append(f"accept {entry['accept']['class_name']}")
+            if entry["deny"]:
+                parts.append(f"deny {', '.join(r['class_name'] for r in entry['deny'])}")
+            options.append(discord.SelectOption(
+                label=entry["username"],
+                value=str(user_id),
+                description=" | ".join(parts)[:100],
+            ))
+        self._select.options = options or [discord.SelectOption(label="Nothing awaiting review", value="0")]
 
     async def _on_select(self, interaction: discord.Interaction):
-        self.selected_signup_id = int(self._select.values[0]) or None
+        self.selected_user_id = int(self._select.values[0]) or None
         await interaction.response.defer()
 
-    @ui.button(label="Accept", style=discord.ButtonStyle.success)
-    async def accept(self, interaction: discord.Interaction, button: ui.Button):
-        if not self.selected_signup_id:
-            await interaction.response.send_message("Select a pick first.", ephemeral=True)
+    @ui.button(label="Approve player", style=discord.ButtonStyle.success, row=0)
+    async def approve_player(self, interaction: discord.Interaction, button: ui.Button):
+        if not self.selected_user_id:
+            await interaction.response.send_message("Select a player first.", ephemeral=True)
             return
-        await roster_service.hoster_accept_pick(self.selected_signup_id, self.match_id, self.ui_updater)
+        await roster_service.commit_player_decisions(
+            interaction.client, self.match_id, self.selected_user_id, self.ui_updater
+        )
         await self.refresh_options()
-        await interaction.response.edit_message(content="Pick accepted — added to roster.", view=self)
+        await interaction.response.edit_message(content="Player's picks approved.", view=self)
 
-    @ui.button(label="Deny", style=discord.ButtonStyle.danger)
-    async def deny(self, interaction: discord.Interaction, button: ui.Button):
-        if not self.selected_signup_id:
-            await interaction.response.send_message("Select a pick first.", ephemeral=True)
+    @ui.button(label="Reject player", style=discord.ButtonStyle.danger, row=0)
+    async def reject_player(self, interaction: discord.Interaction, button: ui.Button):
+        if not self.selected_user_id:
+            await interaction.response.send_message("Select a player first.", ephemeral=True)
             return
-        await roster_service.hoster_deny_pick(self.selected_signup_id, self.match_id, self.ui_updater)
+        await roster_service.reject_player_decisions(
+            interaction.client, self.match_id, self.selected_user_id, self.ui_updater
+        )
         await self.refresh_options()
-        await interaction.response.edit_message(content="Pick denied.", view=self)
+        await interaction.response.edit_message(content="Player rejected.", view=self)
 
-    @ui.button(label="Accept all", style=discord.ButtonStyle.primary, row=1)
-    async def accept_all(self, interaction: discord.Interaction, button: ui.Button):
-        await roster_service.hoster_accept_all(self.match_id, self.ui_updater)
+    @ui.button(label="Approve all", style=discord.ButtonStyle.primary, row=1)
+    async def approve_all(self, interaction: discord.Interaction, button: ui.Button):
+        await roster_service.commit_all_captain_decisions(interaction.client, self.match_id, self.ui_updater)
         await self.refresh_options()
-        await interaction.response.edit_message(content="All captain picks accepted.", view=self)
+        await interaction.response.edit_message(content="All captain picks approved.", view=self)
+
+    @ui.button(label="Reject all", style=discord.ButtonStyle.secondary, row=1)
+    async def reject_all(self, interaction: discord.Interaction, button: ui.Button):
+        await roster_service.reject_all_captain_decisions(interaction.client, self.match_id, self.ui_updater)
+        await self.refresh_options()
+        await interaction.response.edit_message(content="All captain picks rejected.", view=self)
