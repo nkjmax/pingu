@@ -11,6 +11,8 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "apscheduler>=3.11.3",
     "discord>=2.3.2",
+    "groq>=1.6.0",
+    "python-dateutil>=2.9.0.post0",
     "python-dotenv>=1.2.2",
 ]
 

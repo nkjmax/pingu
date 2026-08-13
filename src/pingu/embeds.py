@@ -8,6 +8,8 @@ appended at the end of whichever branch fires, nothing else changed.
 
 import discord
 
+from pingu.templates.reminders import MATCH_REMINDER_LINES
+
 TF2_CLASSES = [
     "Scout", "Soldier", "Pyro", "Demoman",
     "Heavy", "Engineer", "Medic", "Sniper", "Spy"
@@ -144,6 +146,7 @@ def build_mix_message(match, signups, pug_role_id=None):
         f"> - Server: {server}",
         "> - Mode : **9v9 HL**",
         f"> - Hoster: {hoster}",
+    ] + ([f"> - Captain: <@{match['captain_id']}>"] if match["captain_id"] else []) + [
         SEP,
         f"> {team_name} Team",
         class_lines(host_map),
@@ -153,11 +156,7 @@ def build_mix_message(match, signups, pug_role_id=None):
         "> ",
         f"> Subs : {subs_line}",
         SEP,
-        "> :warning: **__REMINDER__**:",
-        "> - Late arrivals, switching class without notifying the host, and no-shows may result in **penalties**",
-        ">       - Please review https://discord.com/channels/1245647143704727644/1512763458536472728 before signing up.",
-        ">    -  *Thank you and enjoy the game! :saluting_face:*",
-    ]
+    ] + MATCH_REMINDER_LINES
 
     return "\n".join(all_lines)
 
@@ -358,8 +357,6 @@ def build_fresh_pug_signup_list(signups):
 
 
 def build_fresh_pug_message(match, pug_role_id=None):
-    ts       = match["timestamp"]
-    ts_line  = f"<t:{ts}:F> <t:{ts}:R>" if ts else "tbc"
     hoster   = f"<@{match['created_by']}>"
     division = match["division"] or "Any"
     maps     = match["map_name"] or ""
@@ -374,7 +371,6 @@ def build_fresh_pug_message(match, pug_role_id=None):
 
     lines = [
         f"> # Fresh PUG",
-        f"> Date: **{ts_line}**",
         f"> {pug_ping}",
         "> ",
         f"> **React with <:PUG:1367589835874893885> to join.** We'll host if we reach **18 players**.",
@@ -511,8 +507,6 @@ def build_split_view_text(red_team, blu_team):
 
 
 def build_6s_fresh_pug_message(match, pug_role_id=None):
-    ts       = match["timestamp"]
-    ts_line  = f"<t:{ts}:F> <t:{ts}:R>" if ts else "tbc"
     hoster   = f"<@{match['created_by']}>"
     division = match["division"] or "Newcomer"
     maps     = match["map_name"] or ""
@@ -526,7 +520,6 @@ def build_6s_fresh_pug_message(match, pug_role_id=None):
 
     lines = [
         f"> # Fresh PUG **6v6**",
-        f"> Date: **{ts_line}**",
         f"> {pug_ping}",
         "> ",
         f"> **React with <:PUG:1367589835874893885> to join.** We'll host if we reach **12 players**.",
@@ -682,6 +675,7 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
         f"> - Server: {server}",
         "> - Mode : **6v6**",
         f"> - Hoster: {hoster}",
+    ] + ([f"> - Captain: <@{match['captain_id']}>"] if match["captain_id"] else []) + [
         SEP,
         f"> {team_name} Team",
         class_lines(host_map),
@@ -691,12 +685,7 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
         "> ",
         f"> Subs : {subs_line}",
         SEP,
-    ] + extra_lines + [
-        "> :warning: **__REMINDER__**:",
-        "> - Late arrivals, switching class without notifying the host, and no-shows may result in **penalties**",
-        ">       - Please review https://discord.com/channels/1245647143704727644/1512763458536472728 before signing up.",
-        ">    -  *Thank you and enjoy the game! :saluting_face:*",
-    ]
+    ] + extra_lines + MATCH_REMINDER_LINES
     return "\n".join(all_lines)
 
 
@@ -796,6 +785,35 @@ def build_ongoing_line(match, guild_id=None, channel_id=None, signups=None):
         return line1 + "\n" + line2
 
     return line1
+
+
+def match_label(match) -> str:
+    """Human-readable label for a match -- used in notices, thread names, archive tasks, etc."""
+    t = match["type"]
+    if t in ("opug", "6s_opug"):
+        return f"{match['division'] or 'PUG'} PUG" + (" (6s)" if t == "6s_opug" else "")
+    elif t == "6s_mix":
+        return f"{match['team_name'] or 'Mix'} vs Mix 6s"
+    elif t in ("fresh_pug", "6s_fresh_pug"):
+        return "Fresh PUG 6v6" if t == "6s_fresh_pug" else "Fresh PUG"
+    else:
+        return f"{match['team_name'] or 'Mix'} vs Mix"
+
+
+def build_roster_icon_lines(roster_str, is_sixs=False) -> str:
+    """
+    Formats a class-ordered roster string (one name per line, already
+    comma-parsed) with class icons -- ":scout: a\\n:soldier: b\\n..." --
+    same convention as build_mix_message's host-team column. Used both
+    when a hoster posts their roster and when a mix-request captain posts
+    theirs, so both get identical display.
+    """
+    class_list = SIXS_CLASSES if is_sixs else TF2_CLASSES
+    emoji_map = SIXS_CLASS_EMOJI if is_sixs else CLASS_EMOJI
+    entries = [e.strip() for e in roster_str.split("\n")] if roster_str else []
+    while len(entries) < len(class_list):
+        entries.append("")
+    return "\n".join(f"{emoji_map[cls]} {entries[i] or '—'}" for i, cls in enumerate(class_list))
 
 
 def build_match_embed(match, signups):

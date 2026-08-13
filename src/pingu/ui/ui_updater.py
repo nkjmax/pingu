@@ -39,34 +39,25 @@ class UIUpdater:
 
     async def _flush(self, match_id: int):
         """
-        One combined refresh: main signup/roster embed, pending-proposals
-        message, and the ongoing-matches line. Import locally to avoid
-        circular imports between ui/ and embeds/services.
+        Delegates to the real, type-aware refresh functions in
+        views/legacy.py -- refresh_message() already handles mix/opug/6s
+        (main message + pending + denied + ongoing-line together), and
+        fresh pug uses its own simpler signup-list refresh. No duplicate
+        logic here; this just calls the one real implementation.
         """
         import pingu.db.matches as matches_db
-        import pingu.db.signups as signups_db
-        from pingu.embeds import build_match_embed, build_ongoing_line
 
         match = await matches_db.get_match(match_id)
         if not match:
             return
-        signups = await signups_db.get_signups_for_match(match_id)
 
-        if match["channel_id"]:
-            channel = self.bot.get_channel(match["channel_id"])
-            if channel and match["message_id"]:
-                try:
-                    msg = await channel.fetch_message(match["message_id"])
-                    await msg.edit(embed=build_match_embed(match, signups))
-                except Exception as e:
-                    log.warning(f"ui_updater: main embed edit failed for match #{match_id}: {e}")
+        from pingu.services.match_lifecycle_service import refresh_message
+        from pingu.views.fresh_pug_manage_views import refresh_fresh_pug_signup_list
 
-        ongoing_channel = getattr(self.bot, "ongoing_channel", None)
-        if ongoing_channel and match["ongoing_msg_id"]:
-            channel = self.bot.get_channel(ongoing_channel)
-            if channel:
-                try:
-                    msg = await channel.fetch_message(match["ongoing_msg_id"])
-                    await msg.edit(content=build_ongoing_line(match, signups=signups))
-                except Exception as e:
-                    log.warning(f"ui_updater: ongoing line edit failed for match #{match_id}: {e}")
+        try:
+            if match["type"] in ("fresh_pug", "6s_fresh_pug"):
+                await refresh_fresh_pug_signup_list(self.bot, match_id)
+            else:
+                await refresh_message(self.bot, match_id)
+        except Exception as e:
+            log.warning(f"ui_updater: refresh failed for match #{match_id}: {e}")

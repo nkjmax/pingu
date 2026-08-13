@@ -1,6 +1,10 @@
 """
-Ported faithfully from the original bot's scheduler.py: clean_cancel_notices,
-clean_conclude_notices, send_1h_reminders, send_8h_reminders, re_sort.
+Ported from the original bot's scheduler.py -- clean_cancel_notices and
+clean_conclude_notices were removed entirely: they only served the old
+in-channel-notice mechanism (cancel_msg_id/conclude_msg_id), which stopped
+being used once do_conclude/do_cancel switched to immediate channel
+teardown + immediate ongoing-line deletion (see match_lifecycle_service).
+send_1h_reminders, send_8h_reminders, re_sort are still the originals.
 New jobs (expire_penalties, close_expired_request_threads) added
 alongside, for the mix-request thread flow and moderation features.
 """
@@ -14,7 +18,7 @@ from pingu.db import matches as matches_db
 from pingu.db import signups as signups_db
 from pingu.db import host_requests as requests_db
 from pingu.embeds import build_ongoing_line, TF2_CLASSES, SIXS_CLASSES
-from pingu.services import moderation_service, channel_service
+from pingu.services import moderation_service
 
 log = logging.getLogger("scheduler")
 
@@ -23,50 +27,6 @@ TWENTY_FOUR_HOURS = 24 * 3600
 
 def start_scheduler(bot):
     scheduler = AsyncIOScheduler()
-
-    # ── Clean expired cancel notices (24h) ──────────────────────────────────
-    async def clean_cancel_notices():
-        """
-        24h after a cancel notice goes up, delete it -- and, since match
-        channels are now created fresh per match rather than reused from a
-        static pool, tear down the whole channel + its VCs at the same
-        point (players had the full 24h to see the outcome first).
-        """
-        notices = await matches_db.get_expired_cancel_notices()
-        for match in notices:
-            channel = bot.get_channel(match["channel_id"])
-            try:
-                if channel and match["cancel_msg_id"]:
-                    msg = await channel.fetch_message(match["cancel_msg_id"])
-                    await msg.delete()
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
-            if channel:
-                try:
-                    await channel_service.teardown_match_channels(channel.guild, match["id"])
-                except Exception as e:
-                    log.warning(f"channel teardown failed for match #{match['id']}: {e}")
-            await matches_db.clear_cancel_msg(match["id"])
-
-    async def clean_conclude_notices():
-        """Same as clean_cancel_notices, for the concluded-match notice."""
-        notices = await matches_db.get_expired_conclude_notices()
-        for match in notices:
-            channel = bot.get_channel(match["channel_id"])
-            try:
-                if channel and match["conclude_msg_id"]:
-                    msg = await channel.fetch_message(match["conclude_msg_id"])
-                    await msg.delete()
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
-            except Exception as e:
-                log.warning(f"clean_conclude_notices failed for match #{match['id']}: {e}")
-            if channel:
-                try:
-                    await channel_service.teardown_match_channels(channel.guild, match["id"])
-                except Exception as e:
-                    log.warning(f"channel teardown failed for match #{match['id']}: {e}")
-            await matches_db.clear_conclude_msg(match["id"])
 
     # ── 1-hour reminder: ping roster in the match channel ───────────────────
     async def send_1h_reminders():
@@ -144,7 +104,7 @@ def start_scheduler(bot):
                     else:
                         match_label = f"{match['team_name'] or 'Mix'} vs Mix"
                     # SlimManageView is part of the original views.py port, not yet landed.
-                    from pingu.views.legacy import SlimManageView
+                    from pingu.views.manage_views import SlimManageView
                     view = SlimManageView(match["id"])
                     await hoster_ch.send(
                         f"<@{match['created_by']}> \u23f0 It's been 8 hours since "
@@ -196,8 +156,6 @@ def start_scheduler(bot):
                         log.warning(f"Failed to delete thread for request #{request['id']}: {e}")
             await requests_db.mark_thread_closed(request["id"])
 
-    scheduler.add_job(clean_cancel_notices, "interval", minutes=5, id="clean_cancel_notices")
-    scheduler.add_job(clean_conclude_notices, "interval", minutes=5, id="clean_conclude_notices")
     scheduler.add_job(send_1h_reminders, "interval", minutes=2, id="remind_1h")
     scheduler.add_job(send_8h_reminders, "interval", minutes=10, id="remind_8h")
     scheduler.add_job(expire_penalties, "interval", minutes=5, id="expire_penalties")

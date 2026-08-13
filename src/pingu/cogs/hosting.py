@@ -21,6 +21,7 @@ from pingu import config
 from pingu.db import matches as matches_db
 from pingu.db import signups as signups_db
 from pingu.services import channel_service
+from pingu.templates.roster_instructions import roster_instructions_block
 from pingu.embeds import (
     build_mix_message, build_match_embed, build_ongoing_line, build_fresh_pug_message, build_opug_message,
     build_6s_fresh_pug_message, build_6s_opug_message, build_6s_mix_message,
@@ -68,6 +69,20 @@ def parse_datetime(raw):
         return None
 
 
+def format_datetime_for_input(unix_timestamp):
+    """Inverse of parse_datetime -- turns a stored timestamp back into the
+    'DD/MM/YY H:MM AM/PM' text a modal's date field expects, for
+    pre-populating an edit form with the current value."""
+    try:
+        dt = datetime.fromtimestamp(unix_timestamp, tz=gettz(DEFAULT_TZ))
+        hour = dt.hour
+        ampm = "AM" if hour < 12 else "PM"
+        hour12 = hour % 12 or 12
+        return f"{dt.day}/{dt.month}/{dt.year % 100} {hour12}:{dt.minute:02d} {ampm}"
+    except Exception:
+        return ""
+
+
 def parse_connect_message(text):
     """Parse a forwarded server-bot message. Returns dict with keys: connect, sdr, tv."""
     result = {}
@@ -109,6 +124,20 @@ def thread_name_for_match(match):
         return f"{team} vs Mix \u2014 {div}, {date}"
 
 
+def parse_class_ordered_roster(content: str) -> str:
+    """
+    The exact same parsing hosters use for their own roster: a comma-
+    separated list, positionally matched to class order when displayed
+    (see embeds.build_mix_message splitting on '\\n' and zipping against
+    TF2_CLASSES/SIXS_CLASSES). Shared between the hoster-created mix flow
+    (main.py's pending-roster handler) and the mix-request captain flow
+    (cogs/host_request.py's thread listener) so both produce an identical
+    host_roster format.
+    """
+    entries = [e.strip() for e in content.split(",") if e.strip()]
+    return "\n".join(entries)
+
+
 def thread_date_str(unix_timestamp):
     """Format a Unix timestamp as SGT date/time for thread names, e.g. '25 Mar 9PM'."""
     try:
@@ -128,6 +157,14 @@ def is_hoster(interaction):
     if not config.HOSTER_ROLE_ID:
         return True
     return any(r.id == config.HOSTER_ROLE_ID for r in interaction.user.roles)
+
+
+def is_fresh_pug_owner(interaction, match):
+    """A fresh pug's own creator can /manage and /connect-string it --
+    but ONLY that one fresh pug, never any other match. /host-request's
+    fresh pug path is open to anyone, not just hosters, so its creator
+    isn't necessarily a hoster at all -- this is the narrow exception."""
+    return match["type"] in ("fresh_pug", "6s_fresh_pug") and match["created_by"] == interaction.user.id
 
 
 async def post_to_ongoing(bot, match_id, channel_id):
@@ -161,12 +198,16 @@ async def refresh_ongoing_line(bot, match_id):
 # ── Step 1: Game mode select ─────────────────────────────────────────────────
 
 class GameModeSelect(ui.View):
-    def __init__(self, bot):
+    def __init__(self, bot, for_request=False):
         super().__init__(timeout=60)
         self.bot = bot
+        self.for_request = for_request
         select = ui.Select(
             placeholder="Select game mode\u2026",
             options=[
+                discord.SelectOption(label="Highlander", value="hl"),
+                discord.SelectOption(label="6s", value="6s"),
+            ] if for_request else [
                 discord.SelectOption(label="Highlander", value="hl"),
                 discord.SelectOption(label="6s", value="6s"),
                 discord.SelectOption(label="Ultiduo", value="ultiduo"),
@@ -183,6 +224,18 @@ class GameModeSelect(ui.View):
                 view=None,
             )
             return
+
+        # Requesting a mix always skips the match-type step -- it's always
+        # "mix" -- straight to division select.
+        if self.for_request:
+            step_label = "**Step 2 of 2:** Select the division."
+            if mode == "6s":
+                view = SixsDivisionSelect(self.bot, for_request=True)
+            else:
+                view = DivisionSelect(self.bot, for_request=True)
+            await interaction.response.edit_message(content=step_label, view=view)
+            return
+
         if mode == "6s":
             view = SixsMatchTypeSelect(self.bot)
             await interaction.response.edit_message(
@@ -247,9 +300,10 @@ class MatchTypeSelect(ui.View):
 # ── Step 3: Division select ───────────────────────────────────────────────────
 
 class DivisionSelect(ui.View):
-    def __init__(self, bot):
+    def __init__(self, bot, for_request=False):
         super().__init__(timeout=60)
         self.bot = bot
+        self.for_request = for_request
         options  = [discord.SelectOption(label=d, value=d) for d in DIVISIONS]
         select   = ui.Select(placeholder="Select division\u2026", options=options)
         select.callback = self._on_select
@@ -257,7 +311,9 @@ class DivisionSelect(ui.View):
 
     async def _on_select(self, interaction):
         division = interaction.data["values"][0]
-        await interaction.response.send_modal(MixModal(self.bot, division, interaction.message))
+        await interaction.response.send_modal(
+            MixModal(self.bot, division, interaction.message, for_request=self.for_request)
+        )
 
 
 # ── Mix modal ─────────────────────────────────────────────────────────────────
@@ -267,7 +323,7 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
         label="Host team name",
         placeholder="e.g. GAY BLACK MEN",
         style=discord.TextStyle.short,
-        required=True, max_length=80,
+        required=True, max_length=40,
     )
     datetime_input = ui.TextInput(
         label="Date & Time (GMT+8, DD/MM/YY)",
@@ -289,11 +345,12 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
         required=True, max_length=80,
     )
 
-    def __init__(self, bot, division, origin_message=None):
+    def __init__(self, bot, division, origin_message=None, for_request=False):
         super().__init__()
         self.bot            = bot
         self.division       = division
         self.origin_message = origin_message
+        self.for_request    = for_request
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
@@ -312,8 +369,19 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
             )
             return
 
-        map_name    = self.map_input.value.strip() or "tbc"
-        server      = self.server_input.value.strip()
+        map_name = self.map_input.value.strip() or "tbc"
+        server   = self.server_input.value.strip()
+
+        if self.for_request:
+            if unix > time.time() + (7 * 86400):
+                await interaction.followup.send(
+                    "\u274c There's a 1 week limit on mix requests \u2014 please pick a date within the next 7 days.",
+                    ephemeral=True,
+                )
+                return
+            await self._submit_as_request(interaction, unix, team_name, map_name, server)
+            return
+
         notes       = None
         pug_role_id = config.PUG_ROLE_ID
 
@@ -344,10 +412,8 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
                 pass
 
         await interaction.followup.send(
-            f"\u2705 Match created! Now **type your host team roster in {channel.mention}**\n"
-            "List 9 players separated by commas in class order (Scout to Spy).\n"
-            "@mentions and plain text both work. The match will be posted once you send it.\n"
-            "Example: `@kaldoz, @aboood, @aswero21, @mackey, mugen, @surge, tbc, tbc, tbc`",
+            f"\u2705 Match created! Now **type your host team roster in {channel.mention}**\n\n"
+            f"{roster_instructions_block(is_sixs=False)}",
             ephemeral=True,
         )
         interaction.client._pending_roster[interaction.user.id] = {
@@ -358,6 +424,51 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
             "roster_interaction": interaction,
         }
 
+    async def _submit_as_request(self, interaction, unix, team_name, map_name, server):
+        """Non-hoster path: creates a pending host_requests row and a
+        thread for roster collection instead of a live match."""
+        from pingu import config as _config
+        from pingu.services import hosting_service
+
+        request_id = await hosting_service.submit_request(
+            interaction.user.id, team_name, self.division, map_name, server, unix,
+        )
+
+        thread = None
+        if _config.MIX_REQUESTS_CHANNEL_ID:
+            requests_channel = interaction.client.get_channel(_config.MIX_REQUESTS_CHANNEL_ID)
+            if requests_channel:
+                thread = await requests_channel.create_thread(
+                    name=f"mix-request-{request_id}-{team_name}",
+                    type=discord.ChannelType.public_thread,
+                )
+                await hosting_service.attach_thread(request_id, thread.id)
+                await thread.send(
+                    f"**Mix request #{request_id}** from {interaction.user.mention}\n"
+                    f"Team: {team_name} | Division: {self.division} | Map: {map_name} | "
+                    f"Server: {server or 'no preference'} | Date: <t:{unix}:F>\n\n"
+                    f"{interaction.user.mention}, post your team's roster below.\n\n"
+                    f"{roster_instructions_block(is_sixs=False)}"
+                )
+
+        if self.origin_message:
+            try:
+                await self.origin_message.delete()
+            except Exception:
+                pass
+
+        if thread:
+            await interaction.followup.send(
+                f"Request #{request_id} submitted. Head to {thread.mention} and post your roster.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "Request submitted, but the mix-requests channel isn't configured "
+                "(MIX_REQUESTS_CHANNEL_ID) -- a hoster will need to be told manually.",
+                ephemeral=True,
+            )
+
 
 # ── Edit modal ────────────────────────────────────────────────────────────────
 
@@ -365,7 +476,7 @@ class EditMixModal(ui.Modal, title="Edit Match Details"):
     team_name_input = ui.TextInput(
         label="Team name \u2014 blank to keep current",
         style=discord.TextStyle.short,
-        required=False, max_length=80,
+        required=False, max_length=40,
     )
     datetime_input = ui.TextInput(
         label="Date & Time (DD/MM/YY) \u2014 blank to keep",
@@ -459,62 +570,6 @@ class EditMixModal(ui.Modal, title="Edit Match Details"):
                 pass
 
         await interaction.followup.send("\u2705 Match details updated.", ephemeral=True)
-
-
-# ── PUG modal ─────────────────────────────────────────────────────────────────
-
-class PugModal(ui.Modal, title="Schedule a PUG (9v9)"):
-    datetime_input = ui.TextInput(
-        label="Date & Time (GMT+8, DD/MM/YY)",
-        placeholder="e.g.  25/3/25 8:00 PM  or  5/3/25 9PM",
-        style=discord.TextStyle.short,
-        required=True,
-    )
-    notes_input = ui.TextInput(
-        label="Notes (optional)",
-        style=discord.TextStyle.paragraph,
-        required=False, max_length=500,
-    )
-
-    def __init__(self, bot):
-        super().__init__()
-        self.bot = bot
-
-    async def on_submit(self, interaction):
-        unix = parse_datetime(self.datetime_input.value.strip())
-        if unix is None:
-            await interaction.response.send_message(
-                f"\u274c Couldn't parse that date/time.\n{DATETIME_HINT}", ephemeral=True
-            )
-            return
-        if unix < time.time():
-            await interaction.response.send_message(
-                "\u274c That date/time is in the past.", ephemeral=True
-            )
-            return
-
-        notes    = self.notes_input.value.strip() or None
-        match_id = await matches_db.create_match(
-            type_="pug", timestamp=unix,
-            created_by=interaction.user.id,
-            created_by_name=interaction.user.display_name,
-            notes=notes,
-        )
-        channel = self.bot.get_channel(self.bot.ongoing_channel)
-        if channel is None:
-            await interaction.response.send_message(
-                "\u274c Could not find the ongoing-matches channel.", ephemeral=True
-            )
-            return
-        match = await matches_db.get_match(match_id)
-        embed = build_match_embed(match, [])
-        from pingu.views.legacy import SignupView
-        view  = SignupView(match_id)
-        msg   = await channel.send(embed=embed, view=view)
-        await matches_db.set_message_id(match_id, msg.id, channel.id)
-        await interaction.response.send_message(
-            f"\u2705 PUG posted to {channel.mention}!", ephemeral=True
-        )
 
 
 # ── Edit select ───────────────────────────────────────────────────────────────
@@ -803,7 +858,7 @@ class OPugModal(ui.Modal, title="Schedule an Organised PUG"):
         channel = self.bot.get_channel(channel_id)
 
         match = await matches_db.get_match(match_id)
-        from pingu.views.legacy import OPugSignupView
+        from pingu.views.signup_views import OPugSignupView
         content = build_opug_message(match, [], pug_role_id=pug_role_id)
         view    = OPugSignupView(match_id)
         msg     = await channel.send(content=content, view=view)
@@ -916,7 +971,7 @@ class SixsFreshPugModal(ui.Modal, title="Schedule a 6s Fresh PUG"):
         channel = self.bot.get_channel(channel_id)
         match   = await matches_db.get_match(match_id)
         content = build_6s_fresh_pug_message(match, pug_role_id=pug_role_id)
-        from pingu.views.legacy import FreshPugSignupView
+        from pingu.views.fresh_pug_manage_views import FreshPugSignupView
         view    = FreshPugSignupView(match_id)
         msg     = await channel.send(content, view=view)
         await matches_db.set_message_id(match_id, msg.id, channel.id)
@@ -985,7 +1040,7 @@ class SixsOPugModal(ui.Modal, title="Schedule a 6s Organised PUG"):
         channel_id, _ = result
         channel = self.bot.get_channel(channel_id)
         match   = await matches_db.get_match(match_id)
-        from pingu.views.legacy import SixsSignupView
+        from pingu.views.signup_views import SixsSignupView
         content = build_6s_opug_message(match, [], pug_role_id=pug_role_id)
         view    = SixsSignupView(match_id)
         msg     = await channel.send(content=content, view=view)
@@ -1007,9 +1062,10 @@ class SixsOPugModal(ui.Modal, title="Schedule a 6s Organised PUG"):
 # ── 6s Mix ────────────────────────────────────────────────────────────────────
 
 class SixsDivisionSelect(ui.View):
-    def __init__(self, bot):
+    def __init__(self, bot, for_request=False):
         super().__init__(timeout=60)
         self.bot = bot
+        self.for_request = for_request
         options  = [discord.SelectOption(label=d, value=d) for d in SIXS_DIVISIONS]
         select   = ui.Select(placeholder="Select division\u2026", options=options)
         select.callback = self._on_select
@@ -1017,20 +1073,23 @@ class SixsDivisionSelect(ui.View):
 
     async def _on_select(self, interaction):
         division = interaction.data["values"][0]
-        await interaction.response.send_modal(SixsMixModal(self.bot, division, interaction.message))
+        await interaction.response.send_modal(
+            SixsMixModal(self.bot, division, interaction.message, for_request=self.for_request)
+        )
 
 
 class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
-    team_name_input = ui.TextInput(label="Host team name", placeholder="e.g. GAY BLACK MEN", style=discord.TextStyle.short, required=True, max_length=80)
+    team_name_input = ui.TextInput(label="Host team name", placeholder="e.g. GAY BLACK MEN", style=discord.TextStyle.short, required=True, max_length=40)
     datetime_input  = ui.TextInput(label="Date & Time (GMT+8, DD/MM/YY)", placeholder="e.g. 25/3/25 8:00 PM", style=discord.TextStyle.short, required=True)
     map_input       = ui.TextInput(label="Map (leave blank for TBC)", placeholder="e.g. cp_process_final", style=discord.TextStyle.short, required=False, max_length=60)
     server_input    = ui.TextInput(label="Server & Location", default="Matcha Singapore", style=discord.TextStyle.short, required=True, max_length=80)
 
-    def __init__(self, bot, division, origin_message=None):
+    def __init__(self, bot, division, origin_message=None, for_request=False):
         super().__init__()
         self.bot            = bot
         self.division       = division
         self.origin_message = origin_message
+        self.for_request    = for_request
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
@@ -1042,8 +1101,19 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
         if unix < time.time():
             await interaction.followup.send("\u274c That date/time is in the past.", ephemeral=True)
             return
-        map_name    = self.map_input.value.strip() or "tbc"
-        server      = self.server_input.value.strip()
+        map_name = self.map_input.value.strip() or "tbc"
+        server   = self.server_input.value.strip()
+
+        if self.for_request:
+            if unix > time.time() + (7 * 86400):
+                await interaction.followup.send(
+                    "\u274c There's a 1 week limit on mix requests \u2014 please pick a date within the next 7 days.",
+                    ephemeral=True,
+                )
+                return
+            await self._submit_as_request(interaction, unix, team_name, map_name, server)
+            return
+
         pug_role_id = config.PUG_ROLE_ID
 
         match_id = await matches_db.create_match(type_="6s_mix", timestamp=unix, created_by=interaction.user.id,
@@ -1066,9 +1136,8 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
                 pass
 
         await interaction.followup.send(
-            f"\u2705 Match created! Now **type your host team roster in {channel.mention}**\n"
-            "List 6 players separated by commas in class order (PScout, FScout, PSoldier, Roamer, Demo, Med).\n"
-            "@mentions and plain text both work. The match will be posted once you send it.",
+            f"\u2705 Match created! Now **type your host team roster in {channel.mention}**\n\n"
+            f"{roster_instructions_block(is_sixs=True)}",
             ephemeral=True,
         )
         interaction.client._pending_roster[interaction.user.id] = {
@@ -1078,6 +1147,51 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
             "type":               "6s_mix",
             "roster_interaction": interaction,
         }
+
+    async def _submit_as_request(self, interaction, unix, team_name, map_name, server):
+        """Non-hoster path -- same idea as MixModal's, just tagged for a
+        6s mix (division comes from the 6s division list)."""
+        from pingu import config as _config
+        from pingu.services import hosting_service
+
+        request_id = await hosting_service.submit_request(
+            interaction.user.id, team_name, self.division, map_name, server, unix,
+        )
+
+        thread = None
+        if _config.MIX_REQUESTS_CHANNEL_ID:
+            requests_channel = interaction.client.get_channel(_config.MIX_REQUESTS_CHANNEL_ID)
+            if requests_channel:
+                thread = await requests_channel.create_thread(
+                    name=f"mix-request-{request_id}-{team_name}-6s",
+                    type=discord.ChannelType.public_thread,
+                )
+                await hosting_service.attach_thread(request_id, thread.id)
+                await thread.send(
+                    f"**6s mix request #{request_id}** from {interaction.user.mention}\n"
+                    f"Team: {team_name} | Division: {self.division} | Map: {map_name} | "
+                    f"Server: {server or 'no preference'} | Date: <t:{unix}:F>\n\n"
+                    f"{interaction.user.mention}, post your team's roster below.\n\n"
+                    f"{roster_instructions_block(is_sixs=True)}"
+                )
+
+        if self.origin_message:
+            try:
+                await self.origin_message.delete()
+            except Exception:
+                pass
+
+        if thread:
+            await interaction.followup.send(
+                f"Request #{request_id} submitted. Head to {thread.mention} and post your roster.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "Request submitted, but the mix-requests channel isn't configured "
+                "(MIX_REQUESTS_CHANNEL_ID) -- a hoster will need to be told manually.",
+                ephemeral=True,
+            )
 
 
 # ── Fresh Pug division select ─────────────────────────────────────────────────
@@ -1099,12 +1213,6 @@ class FreshPugDivisionSelect(ui.View):
 # ── Fresh Pug modal ───────────────────────────────────────────────────────────
 
 class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
-    datetime_input = ui.TextInput(
-        label="Date & Time (GMT+8, DD/MM/YY)",
-        placeholder="e.g.  25/3/25 8:00 PM  or  5/3/25 9PM",
-        style=discord.TextStyle.short,
-        required=True,
-    )
     map_input = ui.TextInput(
         label="Maps (leave blank for TBC)",
         placeholder="e.g. cp_process_final, koth_product_rc9",
@@ -1121,17 +1229,11 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
 
-        unix = parse_datetime(self.datetime_input.value.strip())
-        if unix is None:
-            await interaction.followup.send(
-                f"\u274c Couldn't parse that date/time.\n{DATETIME_HINT}", ephemeral=True
-            )
-            return
-        if unix < time.time():
-            await interaction.followup.send(
-                "\u274c That date/time is in the past.", ephemeral=True
-            )
-            return
+        # Fresh pugs have no scheduled time -- they're assumed to happen
+        # as soon as enough people sign up. timestamp is still a non-
+        # nullable column other things key off, so it's set to "now"
+        # internally, but never parsed from input or shown to anyone.
+        unix = int(time.time())
 
         map_name    = self.map_input.value.strip() or "tbc"
         pug_role_id = config.PUG_ROLE_ID
@@ -1139,7 +1241,7 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
         existing_fp = await matches_db.get_active_fresh_pug()
         if existing_fp:
             await interaction.followup.send(
-                f"\u274c There's already a Fresh PUG happening at <t:{existing_fp['timestamp']}:F>. "
+                f"\u274c There's already a Fresh PUG happening (match #{existing_fp['id']}). "
                 "Please conclude or cancel it first.",
                 ephemeral=True,
             )
@@ -1155,7 +1257,8 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
         )
 
         result = await channel_service.create_match_channels(
-            interaction.guild, match_id, "fresh_pug", division=self.division
+            interaction.guild, match_id, "fresh_pug", division=self.division,
+            creator_id=interaction.user.id,
         )
         if not result:
             await interaction.followup.send(
@@ -1167,7 +1270,7 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
 
         match   = await matches_db.get_match(match_id)
         content = build_fresh_pug_message(match, pug_role_id=pug_role_id)
-        from pingu.views.legacy import FreshPugSignupView
+        from pingu.views.fresh_pug_manage_views import FreshPugSignupView
         view    = FreshPugSignupView(match_id)
         msg     = await channel.send(content, view=view)
         await matches_db.set_message_id(match_id, msg.id, channel.id)
@@ -1488,15 +1591,15 @@ class ScheduleCog(commands.Cog):
 
     @app_commands.command(name="connect-string", description="Parse and post server connect strings.")
     async def connect_string(self, interaction):
-        if not is_hoster(interaction):
-            await interaction.response.send_message(
-                "\u274c You need the hoster role to use this command.", ephemeral=True
-            )
-            return
         match = await matches_db.get_match_by_channel(interaction.channel_id)
         if not match:
             await interaction.response.send_message(
                 "\u274c No active match in this channel.", ephemeral=True
+            )
+            return
+        if not is_hoster(interaction) and not is_fresh_pug_owner(interaction, match):
+            await interaction.response.send_message(
+                "\u274c You need the hoster role to use this command.", ephemeral=True
             )
             return
         await interaction.response.send_modal(ConnectModal(match["id"]))

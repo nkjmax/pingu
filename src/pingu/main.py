@@ -176,7 +176,7 @@ async def setup_hook():
             await bot.load_extension(cog)
             log.info(f"Loaded {cog}")
         except Exception as e:
-            log.error(f"Failed to load {cog}: {e}")
+            log.exception(f"Failed to load {cog}")
 
 
 @bot.event
@@ -233,7 +233,7 @@ async def on_message(message):
     )
     # Not yet ported (see module docstring) -- these two land with the
     # schedule.py / views.py port that follows this file.
-    from pingu.views.legacy import SignupView, SixsSignupView
+    from pingu.views.signup_views import SignupView, SixsSignupView
     from pingu.cogs.hosting import thread_date_str, post_to_ongoing
 
     edit_class = pending_r.get("edit_class")
@@ -259,8 +259,8 @@ async def on_message(message):
         entries[idx] = new_val
         await matches_db.update_match_fields(pending_r["match_id"], host_roster="\n".join(entries))
     else:
-        entries = [e.strip() for e in message.content.split(",") if e.strip()]
-        roster_str = "\n".join(entries)
+        from pingu.cogs.hosting import parse_class_ordered_roster
+        roster_str = parse_class_ordered_roster(message.content)
         await matches_db.update_match_fields(pending_r["match_id"], host_roster=roster_str)
 
     match = await matches_db.get_match(pending_r["match_id"])
@@ -312,15 +312,6 @@ async def on_message(message):
                 except Exception:
                     pass
     else:
-        prev = await matches_db.get_conclude_msg_for_channel(channel.id)
-        if prev and prev["conclude_msg_id"]:
-            try:
-                old_msg = await channel.fetch_message(prev["conclude_msg_id"])
-                await old_msg.delete()
-            except Exception:
-                pass
-            await matches_db.clear_conclude_msg(prev["id"])
-
         if match["type"] == "6s_mix":
             content_msg = build_6s_mix_message(match, signups, pug_role_id=pug_role_id)
             view = SixsSignupView(match["id"])
@@ -332,6 +323,7 @@ async def on_message(message):
 
         msg = await channel.send(content=content_msg, view=view)
         await matches_db.set_message_id(match["id"], msg.id, channel.id)
+        log.info(f"Posted mix message for match #{match['id']}: message_id={msg.id}, channel_id={channel.id} ({channel.name})")
 
         if match["type"] in ("mix", "6s_mix"):
             pending_msg = await channel.send(content=build_pending_message(match, signups))

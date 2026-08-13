@@ -17,16 +17,21 @@ from . import connect
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS signups (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    match_id    INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-    user_id     INTEGER NOT NULL,
-    username    TEXT    NOT NULL,
-    class_name  TEXT    NOT NULL,
-    team        TEXT    NOT NULL DEFAULT 'mix',
-    status      TEXT    DEFAULT 'pending',
-    -- statuses: pending, accepted, denied, cancelled (tombstone),
-    -- and the new 'awaiting_hoster' (captain-screened, pending hoster ok)
-    accepted_at INTEGER
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id          INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    user_id           INTEGER NOT NULL,
+    username          TEXT    NOT NULL,
+    class_name        TEXT    NOT NULL,
+    team              TEXT    NOT NULL DEFAULT 'mix',
+    status            TEXT    DEFAULT 'pending',
+    -- statuses: pending, accepted, denied, cancelled (tombstone).
+    -- captain_decision ('accept'/'deny'/NULL) is separate from status on
+    -- purpose: a captain's decision is a PROPOSAL, not final -- status
+    -- stays 'pending' (so the player stays visibly in the public pending
+    -- list) until a hoster commits it, at which point status flips to
+    -- accepted/denied and captain_decision gets cleared.
+    captain_decision  TEXT    DEFAULT NULL,
+    accepted_at       INTEGER
 );
 """
 
@@ -92,7 +97,8 @@ async def get_pending_signups(match_id):
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM signups WHERE match_id=? AND status='pending' ORDER BY id ASC",
+            "SELECT * FROM signups WHERE match_id=? AND status='pending' "
+            "AND captain_decision IS NULL ORDER BY id ASC",
             (match_id,)
         ) as cur:
             return await cur.fetchall()
@@ -313,6 +319,24 @@ async def remove_pending_slots_for_user(match_id, user_id, keep_class):
         await db.commit()
 
 
+async def remove_undecided_pending_slots_for_user(match_id, user_id, keep_class):
+    """
+    Same idea as remove_pending_slots_for_user, but used by a captain's
+    accept proposal rather than a hoster's final accept -- only clears
+    signups the captain hasn't screened yet (captain_decision IS NULL).
+    A class the captain already proposed to DENY must survive this, so a
+    hoster can still see and finalise that decision later.
+    """
+    async with connect() as db:
+        await db.execute(
+            """UPDATE signups SET status='cancelled'
+               WHERE match_id=? AND user_id=? AND class_name!=? AND status='pending'
+                 AND captain_decision IS NULL""",
+            (match_id, user_id, keep_class)
+        )
+        await db.commit()
+
+
 async def remove_sub_slots_for_user(match_id, user_id, keep_class):
     """Soft-delete other accepted sub signups when promoted to main roster on keep_class."""
     async with connect() as db:
@@ -389,5 +413,64 @@ async def set_all_status(match_id, from_status, to_status):
         await db.execute(
             "UPDATE signups SET status = ? WHERE match_id = ? AND status = ?",
             (to_status, match_id, from_status),
+        )
+        await db.commit()
+
+
+async def set_captain_decision(signup_id, decision):
+    """decision is 'accept', 'deny', or None to clear it. Status is left
+    untouched -- see the captain_decision column comment in CREATE_TABLE."""
+    async with connect() as db:
+        await db.execute(
+            "UPDATE signups SET captain_decision = ? WHERE id = ?", (decision, signup_id)
+        )
+        await db.commit()
+
+
+async def get_pending_undecided(match_id):
+    """Pending signups the captain hasn't screened yet -- what shows up in
+    their own /manage-signups review dropdown."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM signups WHERE match_id = ? AND status = 'pending' "
+            "AND captain_decision IS NULL",
+            (match_id,),
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def get_signups_with_captain_decision(match_id):
+    """Pending signups the captain HAS screened, awaiting the hoster's
+    final call -- what shows up in the hoster's 'Review captain picks'."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM signups WHERE match_id = ? AND status = 'pending' "
+            "AND captain_decision IS NOT NULL",
+            (match_id,),
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def finalise_signup(signup_id, status):
+    """Hoster's final call on a captain-screened pick: sets status
+    (accepted/denied) and clears captain_decision, since it's resolved now."""
+    async with connect() as db:
+        await db.execute(
+            "UPDATE signups SET status = ?, captain_decision = NULL WHERE id = ?",
+            (status, signup_id),
+        )
+        await db.commit()
+
+
+async def finalise_all_accepted(match_id):
+    """Bulk 'accept all' -- only finalises signups the captain proposed to
+    ACCEPT, not blanket-accepts everything in the captain-decision pile."""
+    async with connect() as db:
+        await db.execute(
+            "UPDATE signups SET status = 'accepted', captain_decision = NULL "
+            "WHERE match_id = ? AND status = 'pending' AND captain_decision = 'accept'",
+            (match_id,),
         )
         await db.commit()

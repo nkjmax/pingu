@@ -13,6 +13,7 @@ Unresolved requests (nobody ever accepted/denied) are a known gap --
 their thread just sits open indefinitely. Not handled yet.
 """
 
+import time
 import pingu.db.host_requests as requests_db
 import pingu.db.matches as matches_db
 
@@ -21,18 +22,14 @@ class AlreadyResolved(Exception):
     pass
 
 
-async def submit_request(requester_id, team_name, division, map_name, server, notes=None) -> int:
+async def submit_request(requester_id, team_name, division, map_name, server, timestamp, notes=None) -> int:
     return await requests_db.create_request(
-        requester_id, team_name, division, map_name, server, notes
+        requester_id, team_name, division, map_name, server, timestamp, notes
     )
 
 
 async def attach_thread(request_id, thread_id):
     await requests_db.set_thread(request_id, thread_id)
-
-
-async def attach_roster(request_id, roster: str):
-    await requests_db.set_roster(request_id, roster)
 
 
 async def approve_request(request_id: int, hoster_id: int) -> int:
@@ -50,20 +47,22 @@ async def approve_request(request_id: int, hoster_id: int) -> int:
     await requests_db.set_status(request_id, "approved", hoster_id=hoster_id)
 
     # created_by is the approving hoster (supervisor); captain_id is the
-    # requester -- deliberately different people.
+    # requester -- deliberately different people. Uses the actual scheduled
+    # time collected on the request form (same field the hoster flow has).
     match_id = await matches_db.create_match(
-        match_type="mix",
+        type_="mix",
+        timestamp=request["timestamp"] or int(time.time()),
         created_by=hoster_id,
         created_by_name=str(hoster_id),
         captain_id=request["requester_id"],
-        status="live",
         team_name=request["team_name"],
         division=request["division"],
         map_name=request["map_name"],
         server=request["server"],
-        host_roster=request["roster"],
         host_request_id=request_id,
     )
+    if request["roster"]:
+        await matches_db.update_match_fields(match_id, host_roster=request["roster"])
     return match_id
 
 

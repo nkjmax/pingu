@@ -10,11 +10,12 @@ CREATE TABLE IF NOT EXISTS host_requests (
     division       TEXT,
     map_name       TEXT,
     server         TEXT,
+    timestamp      INTEGER,    -- scheduled match time, same field the hoster flow collects
     notes          TEXT,
     status         TEXT NOT NULL DEFAULT 'pending',  -- pending, approved, denied
     hoster_id      INTEGER,
     thread_id      INTEGER,
-    roster         TEXT,       -- space-separated user IDs pinged by the requester in-thread
+    roster         TEXT,       -- class-ordered roster string, same format as matches.host_roster
     created_at     INTEGER NOT NULL,
     resolved_at    INTEGER,
     thread_closed  INTEGER DEFAULT 0
@@ -22,12 +23,12 @@ CREATE TABLE IF NOT EXISTS host_requests (
 """
 
 
-async def create_request(requester_id, team_name, division, map_name, server, notes=None):
+async def create_request(requester_id, team_name, division, map_name, server, timestamp, notes=None):
     async with connect() as db:
         cur = await db.execute(
             "INSERT INTO host_requests (requester_id, team_name, division, map_name, server, "
-            "notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (requester_id, team_name, division, map_name, server, notes, int(time.time())),
+            "timestamp, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (requester_id, team_name, division, map_name, server, timestamp, notes, int(time.time())),
         )
         await db.commit()
         return cur.lastrowid
@@ -40,11 +41,16 @@ async def get_request(request_id):
         return await cur.fetchone()
 
 
-async def get_pending_requests():
+async def update_request_fields(request_id, **fields):
+    allowed = {"team_name", "division", "map_name", "server", "timestamp"}
+    filtered = {k: v for k, v in fields.items() if k in allowed}
+    if not filtered:
+        return
+    set_clause = ", ".join(f"{k}=?" for k in filtered)
+    values = list(filtered.values()) + [request_id]
     async with connect() as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM host_requests WHERE status = 'pending'")
-        return await cur.fetchall()
+        await db.execute(f"UPDATE host_requests SET {set_clause} WHERE id=?", values)
+        await db.commit()
 
 
 async def set_status(request_id, status, hoster_id=None):

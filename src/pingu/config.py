@@ -36,12 +36,12 @@ GUILD_ID = _env_int("PINGU_GUILD_ID")
 ONGOING_CHANNEL_ID = _env_int("ONGOING_MATCHES_CHANNEL_ID")
 
 HOSTER_ROLE_ID = _env_int("HOSTER_ROLE_ID")
-VERIFIED_ROLE_ID = _env_int("VERIFIED_ROLE_ID")
 LOW_PRIO_ROLE_ID = _env_int("LOW_PRIO_ROLE_ID")  # original bot's "LP" role -- roster sort order AND moderation penalty
-CAPTAIN_ROLE_ID = _env_int("CAPTAIN_ROLE_ID")  # optional -- see hosting_views.MixRequestReviewView
-PUG_ROLE_ID = _env_int("PUG_ROLE_ID")  # default @role pinged in match posts when a match has none set
+LOGS_LINKED_ROLE_ID = _env_int("LOGS_LINKED_ROLE_ID")  # granted on successful /link-logs, separate from PUG_ROLE_ID
+# PUG role: default @role pinged in match posts. No longer tied to
+# verification -- see LOGS_LINKED_ROLE_ID above for that.
+PUG_ROLE_ID = _env_int("PUG_ROLE_ID")
 
-HOSTER_QUEUE_CHANNEL_ID = _env_int("HOSTER_QUEUE_CHANNEL_ID")  # legacy -- see MIX_REQUESTS_CHANNEL_ID
 HOSTER_CHANNEL_ID = _env_int("HOSTER_CHANNEL_ID")  # original bot's 8h "please conclude" reminder channel
 ARCHIVE_CHANNEL_ID = _env_int("ARCHIVE_CHANNEL_ID")
 BALANCING_CHAT_ID = _env_int("BALANCING_CHAT_ID")  # oPUG team-split balancing chat
