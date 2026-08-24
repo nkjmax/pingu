@@ -139,6 +139,9 @@ captain_deny_signup = captain_propose_deny
 
 # ── Hoster finalisation -- the one place a signup gets resolved ──────────────
 
+LP_ACCEPT_LOCKOUT_SECONDS = 2 * 3600  # 2 hours
+
+
 async def finalise_accept(client, match_id, signup_id):
     """
     Used by both a hoster's direct Accept button and the per-player
@@ -148,8 +151,15 @@ async def finalise_accept(client, match_id, signup_id):
     order, pings them in the match thread, and schedules one debounced
     public refresh.
 
-    Returns a dict describing what happened, or None if the signup no
-    longer exists.
+    Blocks accepting an LP player into a mix or opug (any variant) until
+    within 2 hours of kickoff -- fresh pug is exempt entirely, since it
+    has no scheduled start time to measure against in the first place.
+    A blocked attempt leaves the signup untouched (still pending) and
+    returns {"blocked": True, ...} instead of proceeding.
+
+    Returns a dict describing what happened (blocked=False on a normal
+    successful accept, blocked=True if the LP lockout applied), or None
+    if the signup doesn't exist at all.
     """
     current = await signups_db.get_signup_by_id(signup_id)
     if not current:
@@ -161,6 +171,15 @@ async def finalise_accept(client, match_id, signup_id):
 
     match   = await matches_db.get_match(match_id)
     is_opug = match and match["type"] in ("opug", "6s_opug")
+
+    if (
+        match and not already
+        and match["type"] in ("mix", "6s_mix", "opug", "6s_opug")
+        and time.time() < match["timestamp"] - LP_ACCEPT_LOCKOUT_SECONDS
+        and await is_lp(client, user_id)
+    ):
+        return {"blocked": True, "class_name": class_name, "user_id": user_id}
+
     filled  = await signups_db.count_accepted_for_class(match_id, class_name)
 
     await signups_db.finalise_signup(signup_id, "accepted")
@@ -193,7 +212,7 @@ async def finalise_accept(client, match_id, signup_id):
         except Exception:
             pass
 
-    return {"class_name": class_name, "user_id": user_id, "on_main": on_main}
+    return {"blocked": False, "class_name": class_name, "user_id": user_id, "on_main": on_main}
 
 
 async def finalise_deny(client, match_id, signup_id):
@@ -237,34 +256,51 @@ async def commit_player_decisions(client, match_id, user_id, ui_updater: UIUpdat
     Commits everything a captain proposed for ONE player in one action --
     finalises their accept (if any) and every one of their deny proposals.
     This is the hoster's per-player "confirm" action.
+
+    Returns a list of blocked-accept info (empty if nothing was blocked)
+    -- an LP player can't be accepted into a mix/opug until within 2
+    hours of kickoff; any deny proposals in the same batch aren't
+    affected by that and still go through normally regardless.
     """
     by_player = await get_captain_decisions_by_player(match_id)
     entry = by_player.get(user_id)
     if not entry:
-        return
+        return []
 
+    blocked = []
     if entry["accept"]:
-        await finalise_accept(client, match_id, entry["accept"]["id"])
+        result = await finalise_accept(client, match_id, entry["accept"]["id"])
+        if result and result.get("blocked"):
+            blocked.append(result)
     for row in entry["deny"]:
         await finalise_deny(client, match_id, row["id"])
+
+    return blocked
 
 
 async def commit_all_captain_decisions(client, match_id, ui_updater: UIUpdater):
     """
     'Approve all' -- commits every player's full proposed decision set
     (their accept AND their denies), not just a blanket bulk-accept.
+
+    Returns the combined list of blocked-accept info across every player
+    processed, so the caller can tell the hoster which ones got skipped
+    rather than the batch silently dropping them or failing outright.
     """
     by_player = await get_captain_decisions_by_player(match_id)
+    all_blocked = []
     for user_id in by_player:
-        await commit_player_decisions(client, match_id, user_id, ui_updater)
-
+        all_blocked.extend(await commit_player_decisions(client, match_id, user_id, ui_updater))
+    return all_blocked
 
 async def reject_player_decisions(client, match_id, user_id, ui_updater: UIUpdater):
     """
     The hoster overrides everything the captain proposed for ONE player --
     rejects them across the board, regardless of whether the captain
     proposed accepting or denying any given class. Symmetric with
-    commit_player_decisions, opposite outcome.
+    commit_player_decisions, opposite outcome. Uses finalise_deny
+    exclusively -- rejecting is never time-restricted, only accepting is
+    (see finalise_accept's LP lockout), so there's nothing to block here.
     """
     by_player = await get_captain_decisions_by_player(match_id)
     entry = by_player.get(user_id)

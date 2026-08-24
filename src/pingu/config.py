@@ -37,6 +37,7 @@ ONGOING_CHANNEL_ID = _env_int("ONGOING_MATCHES_CHANNEL_ID")
 
 HOSTER_ROLE_ID = _env_int("HOSTER_ROLE_ID")
 LOW_PRIO_ROLE_ID = _env_int("LOW_PRIO_ROLE_ID")  # original bot's "LP" role -- roster sort order AND moderation penalty
+MIX_BAN_ROLE_ID = _env_int("MIX_BAN_ROLE_ID")  # separate penalty role from LOW_PRIO_ROLE_ID, applied via /kill
 LOGS_LINKED_ROLE_ID = _env_int("LOGS_LINKED_ROLE_ID")  # granted on successful /link-logs, separate from PUG_ROLE_ID
 # PUG role: default @role pinged in match posts. No longer tied to
 # verification -- see LOGS_LINKED_ROLE_ID above for that.
@@ -46,6 +47,10 @@ HOSTER_CHANNEL_ID = _env_int("HOSTER_CHANNEL_ID")  # original bot's 8h "please c
 ARCHIVE_CHANNEL_ID = _env_int("ARCHIVE_CHANNEL_ID")
 BALANCING_CHAT_ID = _env_int("BALANCING_CHAT_ID")  # oPUG team-split balancing chat
 MOD_LOG_CHANNEL_ID = _env_int("MOD_LOG_CHANNEL_ID")
+MOD_ROLE_ID = _env_int("MOD_ROLE_ID")  # gets access to every ticket channel, separate from HOSTER_ROLE_ID; also gates /kill
+BANS_CHANNEL_ID = _env_int("BANS_CHANNEL_ID")  # /kill posts its LOW PRIORITY / MIX BAN announcement here
+TICKET_CATEGORY_ID = _env_int("TICKET_CATEGORY_ID")  # every /ticket channel gets created under here
+TICKET_ARCHIVE_CHANNEL_ID = _env_int("TICKET_ARCHIVE_CHANNEL_ID")  # separate from ARCHIVE_CHANNEL_ID (matches)
 MIX_REQUESTS_CHANNEL_ID = _env_int("MIX_REQUESTS_CHANNEL_ID")
 
 RE_SORT_ENABLED = _env_bool("RE_SORT_ENABLED", False)

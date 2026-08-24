@@ -98,6 +98,14 @@ async def _do_accept(interaction, match_id, signup_id, username, class_name):
         await interaction.followup.send(f"\u274c **{username}** could not be accepted (signup not found).", ephemeral=True)
         return
 
+    if result["blocked"]:
+        await interaction.followup.send(
+            f"\u274c **{username}** is Low Priority \u2014 can't be accepted until within "
+            f"2 hours of kickoff. They're still pending.",
+            ephemeral=True,
+        )
+        return
+
     on_main = result["on_main"]
 
     outcome = "accepted on " + class_name if on_main else "added as sub"

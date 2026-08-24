@@ -46,6 +46,26 @@ _NEW_SIGNUPS_COLUMNS = [
     ("captain_decision", "TEXT"),
 ]
 
+# tickets existed as an unused stub from earlier -- its CREATE_TABLE ran
+# unconditionally in init_db() even though nothing ever wrote to it, so
+# anyone who's had the bot running already has the OLD shape (id, user_id,
+# type, body, related_match_id, status, created_at) sitting in their DB.
+# The real /ticket system needs a richer shape -- rather than rename the
+# old `type` column (SQLite RENAME COLUMN support is version-dependent),
+# this just adds the new columns alongside it; `type`/`related_match_id`
+# stay in the schema unused, same "don't drop, just don't reference"
+# approach used for matches' old cancel/conclude-notice columns.
+_NEW_TICKETS_COLUMNS = [
+    ("category", "TEXT"),
+    ("subcategory", "TEXT"),
+    ("ticket_type", "TEXT"),
+    ("channel_id", "INTEGER"),
+    ("closed_at", "INTEGER"),
+    ("closed_by", "INTEGER"),
+    ("ticket_number", "TEXT"),
+    ("thread_id", "INTEGER"),
+]
+
 
 def connect():
     """Returns an aiosqlite connection. Use as `async with`."""
@@ -97,6 +117,14 @@ async def init_db():
                 await db.execute(f"ALTER TABLE signups ADD COLUMN {col} {definition}")
             except Exception:
                 pass
+
+        for col, definition in _NEW_TICKETS_COLUMNS:
+            try:
+                await db.execute(f"ALTER TABLE tickets ADD COLUMN {col} {definition}")
+            except Exception:
+                pass
+
+        await db.execute(tickets.CREATE_TICKET_NUMBER_INDEX)
 
         await db.commit()
 
