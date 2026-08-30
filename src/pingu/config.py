@@ -52,6 +52,7 @@ BANS_CHANNEL_ID = _env_int("BANS_CHANNEL_ID")  # /kill posts its LOW PRIORITY / 
 TICKET_CATEGORY_ID = _env_int("TICKET_CATEGORY_ID")  # every /ticket channel gets created under here
 TICKET_ARCHIVE_CHANNEL_ID = _env_int("TICKET_ARCHIVE_CHANNEL_ID")  # separate from ARCHIVE_CHANNEL_ID (matches)
 MIX_REQUESTS_CHANNEL_ID = _env_int("MIX_REQUESTS_CHANNEL_ID")
+RULES_CHANNEL_ID = _env_int("RULES_CHANNEL_ID")  # linked at the bottom of every match creation message
 
 RE_SORT_ENABLED = _env_bool("RE_SORT_ENABLED", False)
 RE_SORT_INTERVAL_MINUTES = int(os.environ.get("RE_SORT_INTERVAL_MINUTES", "30"))
@@ -59,8 +60,15 @@ RE_SORT_INTERVAL_MINUTES = int(os.environ.get("RE_SORT_INTERVAL_MINUTES", "30"))
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # optional -- Pingu chatbot persona, silently disabled if unset
 
 # Categories dynamic match channels get created under, split by game mode.
-MATCH_CATEGORY_ID = _env_int("MATCH_CATEGORY_ID")        # HL: mix, opug, fresh_pug
-SIXS_MATCH_CATEGORY_ID = _env_int("SIXS_MATCH_CATEGORY_ID")  # 6s: 6s_mix, 6s_opug, 6s_fresh_pug
+MATCH_CATEGORY_ID = _env_int("MATCH_CATEGORY_ID")        # HL: mix, opug, fresh_pug (text channels)
+SIXS_MATCH_CATEGORY_ID = _env_int("SIXS_MATCH_CATEGORY_ID")  # 6s: 6s_mix, 6s_opug, 6s_fresh_pug (text channels)
+
+# Separate, permanent categories for VCs -- not created or torn down by
+# this bot, unlike the text categories above (which are also permanent,
+# but conceptually distinct: text channels and VCs no longer share a
+# category, see channel_service.py).
+HL_VC_CATEGORY_ID = _env_int("HL_VC_CATEGORY_ID")        # HL: mix, opug, fresh_pug (voice channels)
+SIXS_VC_CATEGORY_ID = _env_int("SIXS_VC_CATEGORY_ID")    # 6s: 6s_mix, 6s_opug, 6s_fresh_pug (voice channels)
 
 # name -> role_id, used for /ping's auto-selection and manual dropdown.
 # Original config.json had this as one nested dict; five flat env vars here.

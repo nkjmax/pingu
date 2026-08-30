@@ -8,12 +8,24 @@ Channel/VC structure per match type:
                 (fresh pug is a singleton -- these exact names never collide,
                 no slot needed)
 
+Text channels and VCs now live under SEPARATE categories -- HL_VC_CATEGORY_ID/
+SIXS_VC_CATEGORY_ID for voice, MATCH_CATEGORY_ID/SIXS_MATCH_CATEGORY_ID (still)
+for text. Both VC categories are permanent/pre-existing (not created or torn
+down by this bot), same as the text categories always were.
+
 `slot` is NOT the match_id -- it's "how many of this team/division are
 CURRENTLY active", so a concluded/cancelled match's number gets reused by
 the next one instead of climbing forever. Computed once at creation and
 stored on the match row (channel_slot), so teardown reads the same value
 back rather than recomputing it (recomputing at teardown time would give a
 different, wrong answer once other matches have started/ended since).
+
+Every VC's real channel ID is captured at creation and stored on the match
+row (matches.voice_channel_ids, a small JSON dict -- shape varies by type,
+see db/matches.py) so message templates can link to them directly, and so
+teardown can delete each one by ID instead of matching by name within a
+category -- more robust, and necessary now that VCs and text channels
+don't share a category to search within.
 
 Text channel permissions for mix/opug: only the hoster role (and, for
 mix-request matches, the captain -- granted separately once that role
@@ -34,6 +46,12 @@ def category_id_for_type(match_type: str):
     if match_type in ("6s_mix", "6s_opug", "6s_fresh_pug"):
         return config.SIXS_MATCH_CATEGORY_ID
     return config.MATCH_CATEGORY_ID
+
+
+def vc_category_id_for_type(match_type: str):
+    if match_type in ("6s_mix", "6s_opug", "6s_fresh_pug"):
+        return config.SIXS_VC_CATEGORY_ID
+    return config.HL_VC_CATEGORY_ID
 
 
 def _slug(text: str) -> str:
@@ -75,7 +93,9 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
                                   team_name: str = None, division: str = None, creator_id: int = None):
     """
     Creates the channels for a match. Returns (text_channel_id, category_id),
-    or None if the category isn't configured/found.
+    or None if the text category isn't configured/found. VC creation is
+    best-effort -- if the VC category isn't configured, text channel
+    creation still proceeds; a match just ends up without linkable VCs.
 
     creator_id is only meaningful for fresh_pug/6s_fresh_pug -- unlike a
     hoster-created mix (whose creator is already a hoster by definition,
@@ -93,6 +113,11 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
     if not category or not isinstance(category, discord.CategoryChannel):
         return None
 
+    vc_category_id = vc_category_id_for_type(match_type)
+    vc_category = guild.get_channel(vc_category_id) if vc_category_id else None
+    if vc_category and not isinstance(vc_category, discord.CategoryChannel):
+        vc_category = None
+
     if match_type in ("mix", "6s_mix"):
         slot = await matches_db.count_active_by_key(match_type, "team_name", team_name)
     elif match_type in ("opug", "6s_opug"):
@@ -102,33 +127,45 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
     await matches_db.set_channel_slot(match_id, slot)
 
     label = channel_label_for_match(match_type, slot, team_name, division)
+    vc_ids = {}
 
     if match_type in ("fresh_pug", "6s_fresh_pug"):
-        text_channel = await _create_fresh_pug_channels(guild, category, label, creator_id=creator_id)
+        text_channel, vc_ids = await _create_fresh_pug_channels(guild, category, vc_category, label, creator_id=creator_id)
     elif match_type in ("mix", "6s_mix"):
         overwrites = _mix_opug_overwrites(guild)
         text_channel = await category.create_text_channel(name=label, overwrites=overwrites)
-        await category.create_voice_channel(name=label)
+        if vc_category:
+            vc = await vc_category.create_voice_channel(name=label)
+            vc_ids["vc"] = vc.id
     elif match_type in ("opug", "6s_opug"):
         overwrites = _mix_opug_overwrites(guild)
         text_channel = await category.create_text_channel(name=label, overwrites=overwrites)
         div_slug = _slug(division or "pug")
-        await category.create_voice_channel(name=f"{div_slug}-red-{slot}")
-        await category.create_voice_channel(name=f"{div_slug}-blu-{slot}")
+        if vc_category:
+            red_vc = await vc_category.create_voice_channel(name=f"{div_slug}-red-{slot}")
+            blu_vc = await vc_category.create_voice_channel(name=f"{div_slug}-blu-{slot}")
+            vc_ids["red"] = red_vc.id
+            vc_ids["blu"] = blu_vc.id
     else:
         text_channel = await category.create_text_channel(name=label)
+
+    if vc_ids:
+        await matches_db.set_voice_channel_ids(match_id, vc_ids)
 
     await matches_db.set_category_id(match_id, category.id)
     return text_channel.id, category.id
 
 
-async def _create_fresh_pug_channels(guild: discord.Guild, category: discord.CategoryChannel, label: str,
-                                       creator_id: int = None):
+async def _create_fresh_pug_channels(guild: discord.Guild, category: discord.CategoryChannel,
+                                       vc_category, label: str, creator_id: int = None):
     """
     Fresh pug's text channel is post-only for hosters (plus its own
     creator, see create_match_channels' docstring) -- everyone else can
-    view and react (for the react-to-join flow) but not type. Adjust the
-    hoster-role overwrite here if you don't use a single HOSTER_ROLE_ID.
+    view but not type (joining is button-based, via FreshPugSignupButton,
+    not reactions). Adjust the hoster-role overwrite here if you don't use
+    a single HOSTER_ROLE_ID.
+
+    Returns (text_channel, vc_ids_dict).
     """
     everyone_overwrite = discord.PermissionOverwrite(
         view_channel=True, send_messages=False, add_reactions=True, read_message_history=True,
@@ -144,11 +181,21 @@ async def _create_fresh_pug_channels(guild: discord.Guild, category: discord.Cat
             overwrites[creator] = discord.PermissionOverwrite(send_messages=True)
 
     text_channel = await category.create_text_channel(name=label, overwrites=overwrites)
-    await category.create_voice_channel(name="waiting-room")
-    await category.create_voice_channel(name="fresh-lobby")
-    await category.create_voice_channel(name="fresh-red")
-    await category.create_voice_channel(name="fresh-blu")
-    return text_channel
+
+    vc_ids = {}
+    if vc_category:
+        waiting_room = await vc_category.create_voice_channel(name="waiting-room")
+        fresh_lobby  = await vc_category.create_voice_channel(name="fresh-lobby")
+        fresh_red    = await vc_category.create_voice_channel(name="fresh-red")
+        fresh_blu    = await vc_category.create_voice_channel(name="fresh-blu")
+        vc_ids = {
+            "waiting_room": waiting_room.id,
+            "fresh_lobby": fresh_lobby.id,
+            "fresh_red": fresh_red.id,
+            "fresh_blu": fresh_blu.id,
+        }
+
+    return text_channel, vc_ids
 
 
 async def grant_captain_channel_access(guild: discord.Guild, match_id: int, captain_role: discord.Role):
@@ -170,31 +217,21 @@ async def grant_captain_channel_access(guild: discord.Guild, match_id: int, capt
 
 async def teardown_match_channels(guild: discord.Guild, match_id: int):
     """
-    Deletes this match's text channel and all voice channels alongside it
-    in the same category with a matching name pattern -- never deletes the
-    category itself, which is shared across all matches of that mode.
+    Deletes this match's text channel and every VC stored on its
+    voice_channel_ids -- deleted by ID directly, not by matching name
+    within a category, since VCs and the text channel don't necessarily
+    share a category anymore (see module docstring). Never deletes either
+    category itself, which is shared/permanent across all matches of that
+    mode.
 
-    Voice channel names are computed deterministically from the match's
-    own stored channel_slot (not recomputed from current active-match
-    counts, which would give a different, wrong answer here), and not read
-    off a live text_channel object -- guild.get_channel() is a cache
-    lookup, not an API call, and a miss there shouldn't mean deletion gets
-    silently skipped.
+    Deliberately not read off a live channel object where avoidable --
+    guild.get_channel() is a cache lookup, not an API call, and a miss
+    there shouldn't mean deletion gets silently skipped, hence the
+    fetch_channel() fallback on each one.
     """
     match = await matches_db.get_match(match_id)
     if not match:
         return
-
-    category_id = match["category_id"]
-    category = guild.get_channel(category_id) if category_id else None
-    if not category:
-        try:
-            category = await guild.fetch_channel(category_id) if category_id else None
-        except discord.HTTPException:
-            category = None
-
-    match_type = match["type"]
-    slot = match["channel_slot"] or 1
 
     text_channel = guild.get_channel(match["channel_id"]) if match["channel_id"] else None
     if not text_channel and match["channel_id"]:
@@ -203,30 +240,26 @@ async def teardown_match_channels(guild: discord.Guild, match_id: int):
         except discord.HTTPException:
             text_channel = None
 
-    voice_names_to_delete = set()
-    if match_type in ("mix", "6s_mix"):
-        voice_names_to_delete.add(
-            channel_label_for_match(match_type, slot, team_name=match["team_name"])
-        )
-    elif match_type in ("opug", "6s_opug"):
-        div_slug = _slug(match["division"] or "pug")
-        voice_names_to_delete.update({f"{div_slug}-red-{slot}", f"{div_slug}-blu-{slot}"})
-    elif match_type in ("fresh_pug", "6s_fresh_pug"):
-        voice_names_to_delete.update({"waiting-room", "fresh-lobby", "fresh-red", "fresh-blu"})
-
-    if category and isinstance(category, discord.CategoryChannel):
-        for vc in list(category.voice_channels):
-            if vc.name in voice_names_to_delete:
-                try:
-                    await vc.delete(reason=f"Match #{match_id} archived")
-                except discord.HTTPException:
-                    pass
-
     if text_channel:
         try:
             await text_channel.delete(reason=f"Match #{match_id} archived")
         except discord.HTTPException:
             pass
+
+    vc_ids = await matches_db.get_voice_channel_ids(match_id)
+    if vc_ids:
+        for vc_id in vc_ids.values():
+            vc = guild.get_channel(vc_id)
+            if not vc:
+                try:
+                    vc = await guild.fetch_channel(vc_id)
+                except discord.HTTPException:
+                    vc = None
+            if vc:
+                try:
+                    await vc.delete(reason=f"Match #{match_id} archived")
+                except discord.HTTPException:
+                    pass
 
     # Dynamic per-team captain role (mix-request matches only) -- deleted
     # alongside the channels, not left dangling on the server.
