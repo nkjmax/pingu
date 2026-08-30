@@ -160,10 +160,11 @@ def is_hoster(interaction):
 
 
 def is_fresh_pug_owner(interaction, match):
-    """A fresh pug's own creator can /manage and /connect-string it --
-    but ONLY that one fresh pug, never any other match. /host-request's
-    fresh pug path is open to anyone, not just hosters, so its creator
-    isn't necessarily a hoster at all -- this is the narrow exception."""
+    """A fresh pug's own creator can /manage, /edit, /connect-string, and
+    /ping it -- but ONLY that one fresh pug, never any other match.
+    /host-request's fresh pug path is open to anyone, not just hosters,
+    so its creator isn't necessarily a hoster at all -- this is the
+    narrow exception."""
     return match["type"] in ("fresh_pug", "6s_fresh_pug") and match["created_by"] == interaction.user.id
 
 
@@ -280,15 +281,11 @@ class MatchTypeSelect(ui.View):
             existing_fp = await matches_db.get_active_fresh_pug()
             if existing_fp:
                 await interaction.response.edit_message(
-                    content=f"\u274c There's already a Fresh PUG happening at <t:{existing_fp['timestamp']}:F>. Please conclude or cancel it first.",
+                    content=f"\u274c There's already a Fresh PUG happening (match #{existing_fp['id']}). Please conclude or cancel it first.",
                     view=None,
                 )
                 return
-            view = FreshPugDivisionSelect(self.bot)
-            await interaction.response.edit_message(
-                content="**Step 3 of 3:** Select the division.",
-                view=view,
-            )
+            await interaction.response.send_modal(FreshPugModal(self.bot))
             return
         view = DivisionSelect(self.bot)
         await interaction.response.edit_message(
@@ -572,6 +569,65 @@ class EditMixModal(ui.Modal, title="Edit Match Details"):
         await interaction.followup.send("\u2705 Match details updated.", ephemeral=True)
 
 
+class EditFreshPugModal(ui.Modal, title="Edit Fresh PUG"):
+    """
+    Fresh pugs have no team name, no scheduled date/time, no server field
+    (always None by design), and now no division either -- reusing
+    EditMixModal's fields for them was the actual bug this replaces: it
+    asked for several inapplicable fields, and on save it fell into
+    EditMixModal's "anything not 6s_mix/6s_opug/opug defaults to
+    build_mix_message" branch, rebuilding the message with the wrong
+    builder entirely. This modal only has what a fresh pug actually has:
+    its map.
+    """
+    map_input = ui.TextInput(
+        label="Maps \u2014 blank to keep current",
+        style=discord.TextStyle.short,
+        required=False, max_length=120,
+    )
+
+    def __init__(self, match_id, bot):
+        super().__init__()
+        self.match_id = match_id
+        self.bot      = bot
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        new_map = self.map_input.value.strip()
+        if not new_map:
+            await interaction.followup.send("No changes \u2014 map field was blank.", ephemeral=True)
+            return
+
+        match = await matches_db.get_match(self.match_id)
+        if not match or match["ended"]:
+            await interaction.followup.send(
+                "\u274c This Fresh PUG has already ended or been cancelled.", ephemeral=True
+            )
+            return
+
+        await matches_db.update_match_fields(self.match_id, map_name=new_map)
+
+        match = await matches_db.get_match(self.match_id)
+        pug_role_id = config.PUG_ROLE_ID
+
+        try:
+            channel = interaction.client.get_channel(match["channel_id"])
+            msg     = await channel.fetch_message(match["message_id"])
+            if match["type"] == "6s_fresh_pug":
+                content = build_6s_fresh_pug_message(match, pug_role_id=pug_role_id)
+            else:
+                content = build_fresh_pug_message(match, pug_role_id=pug_role_id)
+            await msg.edit(content=content)
+        except Exception as e:
+            await interaction.followup.send(
+                f"\u26a0\ufe0f Map saved but couldn't refresh message: {e}", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send("\u2705 Fresh PUG map updated.", ephemeral=True)
+
+
 # ── Edit select ───────────────────────────────────────────────────────────────
 
 class EditSelectView(ui.View):
@@ -595,13 +651,22 @@ class EditSelectView(ui.View):
         match   = await matches_db.get_match(self.match_id)
         is_sixs = match["type"] in ("6s_mix", "6s_opug") if match else False
         is_opug = match["type"] in ("opug", "6s_opug") if match else False
+        is_fresh_pug = match["type"] in ("fresh_pug", "6s_fresh_pug") if match else False
 
         if choice == "match":
-            await interaction.response.send_modal(EditMixModal(self.match_id, self.bot))
+            if is_fresh_pug:
+                await interaction.response.send_modal(EditFreshPugModal(self.match_id, self.bot))
+            else:
+                await interaction.response.send_modal(EditMixModal(self.match_id, self.bot))
         elif choice == "division":
             if is_opug:
                 await interaction.response.edit_message(
                     content="\u274c Division cannot be edited for Organised PUGs.", view=None
+                )
+                return
+            if is_fresh_pug:
+                await interaction.response.edit_message(
+                    content="\u274c Fresh PUGs don't have a division.", view=None
                 )
                 return
             if is_sixs:
@@ -615,9 +680,10 @@ class EditSelectView(ui.View):
                 content="Select the new division:", view=view
             )
         else:
-            if is_opug:
+            if is_opug or is_fresh_pug:
+                reason = "Organised PUGs" if is_opug else "Fresh PUGs"
                 await interaction.response.edit_message(
-                    content="\u274c Organised PUGs don't have a host team roster to edit.", view=None
+                    content=f"\u274c {reason} don't have a host team roster to edit.", view=None
                 )
                 return
             view = EditRosterClassSelect(self.match_id, self.bot, is_sixs=is_sixs)
@@ -907,12 +973,11 @@ class SixsMatchTypeSelect(ui.View):
             existing = await matches_db.get_active_6s_fresh_pug()
             if existing:
                 await interaction.response.edit_message(
-                    content=f"\u274c There's already a 6s Fresh PUG at <t:{existing['timestamp']}:F>. Please conclude or cancel it first.",
+                    content=f"\u274c There's already a 6s Fresh PUG happening (match #{existing['id']}). Please conclude or cancel it first.",
                     view=None,
                 )
                 return
-            view = SixsFreshPugDivisionSelect(self.bot)
-            await interaction.response.edit_message(content="**Step 3 of 3:** Select the division.", view=view)
+            await interaction.response.send_modal(SixsFreshPugModal(self.bot))
         elif match_type == "opug":
             view = SixsOPugDivisionSelect(self.bot)
             await interaction.response.edit_message(content="**Step 3 of 3:** Select the division.", view=view)
@@ -923,46 +988,29 @@ class SixsMatchTypeSelect(ui.View):
 
 # ── 6s Fresh PUG ──────────────────────────────────────────────────────────────
 
-class SixsFreshPugDivisionSelect(ui.View):
-    def __init__(self, bot):
-        super().__init__(timeout=60)
-        self.bot = bot
-        options  = [discord.SelectOption(label=d, value=d) for d in SIXS_DIVISIONS]
-        select   = ui.Select(placeholder="Select division\u2026", options=options)
-        select.callback = self._on_select
-        self.add_item(select)
-
-    async def _on_select(self, interaction):
-        await interaction.response.send_modal(SixsFreshPugModal(self.bot, interaction.data["values"][0]))
-
-
 class SixsFreshPugModal(ui.Modal, title="Schedule a 6s Fresh PUG"):
-    datetime_input = ui.TextInput(label="Date & Time (GMT+8, DD/MM/YY)", placeholder="e.g. 25/3/25 8:00 PM", style=discord.TextStyle.short, required=True)
-    map_input      = ui.TextInput(label="Maps (leave blank for TBC)", placeholder="e.g. cp_process_final", style=discord.TextStyle.short, required=False, max_length=120)
+    map_input = ui.TextInput(label="Maps (leave blank for TBC)", placeholder="e.g. cp_process_final", style=discord.TextStyle.short, required=False, max_length=120)
 
-    def __init__(self, bot, division):
+    def __init__(self, bot):
         super().__init__()
         self.bot = bot
-        self.division = division
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
-        unix = parse_datetime(self.datetime_input.value.strip())
-        if unix is None:
-            await interaction.followup.send(f"\u274c Couldn't parse date/time.\n{DATETIME_HINT}", ephemeral=True)
-            return
-        if unix < time.time():
-            await interaction.followup.send("\u274c That date/time is in the past.", ephemeral=True)
-            return
+        # 6s fresh pugs have no scheduled time -- they're assumed to
+        # happen as soon as enough people sign up. timestamp is still a
+        # non-nullable column other things key off, so it's set to "now"
+        # internally, but never parsed from input or shown to anyone.
+        unix = int(time.time())
         map_name    = self.map_input.value.strip() or "tbc"
         pug_role_id = config.PUG_ROLE_ID
 
         match_id = await matches_db.create_match(type_="6s_fresh_pug", timestamp=unix, created_by=interaction.user.id,
             created_by_name=interaction.user.display_name, team_name=None, notes=None,
-            division=self.division, map_name=map_name, server=None, pug_role_id=pug_role_id)
+            division=None, map_name=map_name, server=None, pug_role_id=pug_role_id)
 
         result = await channel_service.create_match_channels(
-            interaction.guild, match_id, "6s_fresh_pug"
+            interaction.guild, match_id, "6s_fresh_pug", creator_id=interaction.user.id
         )
         if not result:
             await interaction.followup.send("\u274c Could not create PUG channel \u2014 check SIXS_MATCH_CATEGORY_ID in .env.", ephemeral=True)
@@ -1194,22 +1242,6 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
             )
 
 
-# ── Fresh Pug division select ─────────────────────────────────────────────────
-
-class FreshPugDivisionSelect(ui.View):
-    def __init__(self, bot):
-        super().__init__(timeout=60)
-        self.bot = bot
-        options  = [discord.SelectOption(label=d, value=d) for d in FP_DIVISIONS]
-        select   = ui.Select(placeholder="Select division\u2026", options=options)
-        select.callback = self._on_select
-        self.add_item(select)
-
-    async def _on_select(self, interaction):
-        division = interaction.data["values"][0]
-        await interaction.response.send_modal(FreshPugModal(self.bot, division))
-
-
 # ── Fresh Pug modal ───────────────────────────────────────────────────────────
 
 class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
@@ -1221,10 +1253,9 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
         max_length=120,
     )
 
-    def __init__(self, bot, division):
+    def __init__(self, bot):
         super().__init__()
-        self.bot      = bot
-        self.division = division
+        self.bot = bot
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
@@ -1252,13 +1283,12 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
             created_by=interaction.user.id,
             created_by_name=interaction.user.display_name,
             team_name=None, notes=None,
-            division=self.division, map_name=map_name,
+            division=None, map_name=map_name,
             server=None, pug_role_id=pug_role_id,
         )
 
         result = await channel_service.create_match_channels(
-            interaction.guild, match_id, "fresh_pug", division=self.division,
-            creator_id=interaction.user.id,
+            interaction.guild, match_id, "fresh_pug", creator_id=interaction.user.id
         )
         if not result:
             await interaction.followup.send(
@@ -1417,18 +1447,13 @@ def get_auto_ping_ids(match):
     plat_id   = ping_roles.get("Plat")
     pug_id    = ping_roles.get("PUG")
 
-    division = (match["division"] or "").strip()
-
     if match_type in ("fresh_pug", "6s_fresh_pug"):
-        if division in ("", "Any"):
-            return [r for r in [pug_id] if r]
-        elif division == "Steel":
-            return [r for r in [iron_id, steel_id] if r]
-        elif division == "Silver":
-            return [r for r in [silver_id] if r]
-        elif division == "Plat":
-            return [r for r in [plat_id] if r]
+        # Fresh pugs are divisionless now -- just ping the generic PUG
+        # role, no per-division branching to do (there's no division to
+        # branch on anymore).
         return [r for r in [pug_id] if r]
+
+    division = (match["division"] or "").strip()
 
     if division == "Iron/Steel":
         return [r for r in [iron_id, steel_id] if r]
@@ -1573,15 +1598,15 @@ class ScheduleCog(commands.Cog):
 
     @app_commands.command(name="edit", description="Edit match details or host team roster.")
     async def edit(self, interaction):
-        if not is_hoster(interaction):
-            await interaction.response.send_message(
-                "\u274c You need the hoster role to use this command.", ephemeral=True
-            )
-            return
         match = await matches_db.get_match_by_channel(interaction.channel_id)
         if not match:
             await interaction.response.send_message(
                 "\u274c No active match in this channel.", ephemeral=True
+            )
+            return
+        if not is_hoster(interaction) and not is_fresh_pug_owner(interaction, match):
+            await interaction.response.send_message(
+                "\u274c You need the hoster role to use this command.", ephemeral=True
             )
             return
         view = EditSelectView(match["id"], self.bot)
@@ -1606,15 +1631,15 @@ class ScheduleCog(commands.Cog):
 
     @app_commands.command(name="ping", description="Ping roles asking for players.")
     async def ping_players(self, interaction):
-        if not is_hoster(interaction):
-            await interaction.response.send_message(
-                "\u274c You need the hoster role to use this command.", ephemeral=True
-            )
-            return
         match = await matches_db.get_match_by_channel(interaction.channel_id)
         if not match:
             await interaction.response.send_message(
                 "\u274c No active match in this channel.", ephemeral=True
+            )
+            return
+        if not is_hoster(interaction) and not is_fresh_pug_owner(interaction, match):
+            await interaction.response.send_message(
+                "\u274c You need the hoster role to use this command.", ephemeral=True
             )
             return
 

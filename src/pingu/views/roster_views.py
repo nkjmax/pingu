@@ -135,11 +135,19 @@ class HosterPicksReviewView(ui.View):
         if not self.selected_user_id:
             await interaction.response.send_message("Select a player first.", ephemeral=True)
             return
-        await roster_service.commit_player_decisions(
+        blocked = await roster_service.commit_player_decisions(
             interaction.client, self.match_id, self.selected_user_id, self.ui_updater
         )
         await self.refresh_options()
-        await interaction.response.edit_message(content="Player's picks approved.", view=self)
+        if blocked:
+            names = ", ".join(f"**{b['class_name']}**" for b in blocked)
+            content = (
+                f"Player's picks committed \u2014 but their accept ({names}) was skipped: "
+                f"they're Low Priority and it's more than 2 hours before kickoff. Still pending."
+            )
+        else:
+            content = "Player's picks approved."
+        await interaction.response.edit_message(content=content, view=self)
 
     @ui.button(label="Reject player", style=discord.ButtonStyle.danger, row=0)
     async def reject_player(self, interaction: discord.Interaction, button: ui.Button):
@@ -154,9 +162,17 @@ class HosterPicksReviewView(ui.View):
 
     @ui.button(label="Approve all", style=discord.ButtonStyle.primary, row=1)
     async def approve_all(self, interaction: discord.Interaction, button: ui.Button):
-        await roster_service.commit_all_captain_decisions(interaction.client, self.match_id, self.ui_updater)
+        blocked = await roster_service.commit_all_captain_decisions(interaction.client, self.match_id, self.ui_updater)
         await self.refresh_options()
-        await interaction.response.edit_message(content="All captain picks approved.", view=self)
+        if blocked:
+            names = ", ".join(f"<@{b['user_id']}> ({b['class_name']})" for b in blocked)
+            content = (
+                f"All captain picks approved \u2014 except {len(blocked)} skipped for being Low Priority "
+                f"within the 2-hour kickoff window: {names}. Still pending."
+            )
+        else:
+            content = "All captain picks approved."
+        await interaction.response.edit_message(content=content, view=self)
 
     @ui.button(label="Reject all", style=discord.ButtonStyle.secondary, row=1)
     async def reject_all(self, interaction: discord.Interaction, button: ui.Button):

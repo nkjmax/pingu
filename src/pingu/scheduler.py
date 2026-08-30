@@ -141,7 +141,10 @@ def start_scheduler(bot):
     # ── New: penalty expiry sweep ────────────────────────────────────────────
     async def expire_penalties():
         for guild in bot.guilds:
-            await moderation_service.expire_penalties(guild, role_id=config.LOW_PRIO_ROLE_ID)
+            await moderation_service.expire_penalties(guild, role_ids={
+                "low_prio": config.LOW_PRIO_ROLE_ID,
+                "mix_ban": config.MIX_BAN_ROLE_ID,
+            })
 
     # ── New: close mix-request threads 24h after resolution ─────────────────
     async def close_expired_request_threads():

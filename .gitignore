@@ -19,6 +19,7 @@ matches.db
 *.db-journal
 *.db-wal
 *.db-shm
+tickets_export.xlsx
 
 # Editor/OS cruft
 .vscode/

@@ -358,7 +358,6 @@ def build_fresh_pug_signup_list(signups):
 
 def build_fresh_pug_message(match, pug_role_id=None):
     hoster   = f"<@{match['created_by']}>"
-    division = match["division"] or "Any"
     maps     = match["map_name"] or ""
     role_id  = match["pug_role_id"] or pug_role_id
     pug_ping = f"<@&{role_id}>" if role_id else "@here"
@@ -367,7 +366,6 @@ def build_fresh_pug_message(match, pug_role_id=None):
     rules_channel = "<#1512763458536472728>"
 
     map_line = f"> Maps: {maps}" if maps else "> Maps: tbc"
-    div_line = f"> Division: {division}"
 
     lines = [
         f"> # Fresh PUG",
@@ -375,7 +373,6 @@ def build_fresh_pug_message(match, pug_role_id=None):
         "> ",
         f"> **React with <:PUG:1367589835874893885> to join.** We'll host if we reach **18 players**.",
         "> ",
-        div_line,
         map_line,
         f"> Hoster: {hoster}",
         "> ## **PUGGERS - PLEASE READ! \U0001f440 **",
@@ -508,7 +505,6 @@ def build_split_view_text(red_team, blu_team):
 
 def build_6s_fresh_pug_message(match, pug_role_id=None):
     hoster   = f"<@{match['created_by']}>"
-    division = match["division"] or "Newcomer"
     maps     = match["map_name"] or ""
     role_id  = match["pug_role_id"] or pug_role_id
     pug_ping = f"<@&{role_id}>" if role_id else "@here"
@@ -516,7 +512,6 @@ def build_6s_fresh_pug_message(match, pug_role_id=None):
     spec_channel  = "<#1449606731574411395>"
     rules_channel = "<#1512763458536472728>"
     map_line = f"> Maps: {maps}" if maps else "> Maps: tbc"
-    div_line = f"> Division: {division}"
 
     lines = [
         f"> # Fresh PUG **6v6**",
@@ -524,7 +519,6 @@ def build_6s_fresh_pug_message(match, pug_role_id=None):
         "> ",
         f"> **React with <:PUG:1367589835874893885> to join.** We'll host if we reach **12 players**.",
         "> ",
-        div_line,
         map_line,
         f"> Hoster: {hoster}",
         "> ## **PUGGERS - PLEASE READ! \U0001f440 **",
@@ -798,6 +792,43 @@ def match_label(match) -> str:
         return "Fresh PUG 6v6" if t == "6s_fresh_pug" else "Fresh PUG"
     else:
         return f"{match['team_name'] or 'Mix'} vs Mix"
+
+
+def build_concluded_ongoing_line(match) -> str:
+    """
+    Replaces the ongoing-matches line on conclude instead of deleting it --
+    "Mix with X concluded", "{div} PUG concluded", "Fresh PUG concluded".
+    """
+    t = match["type"]
+    if t in ("mix", "6s_mix"):
+        team = match["team_name"] or "Mix"
+        suffix = " (6s)" if t == "6s_mix" else ""
+        return f"Mix with **{team}**{suffix} concluded! Thanks for playing! \U0001fae1"
+    elif t in ("opug", "6s_opug"):
+        division = match["division"] or "PUG"
+        suffix = " (6s)" if t == "6s_opug" else ""
+        return f"**{division}** PUG{suffix} concluded! Thanks for playing! \U0001fae1"
+    elif t in ("fresh_pug", "6s_fresh_pug"):
+        label = "Fresh PUG 6v6" if t == "6s_fresh_pug" else "Fresh PUG"
+        return f"**{label}** concluded! Thanks for playing! \U0001fae1"
+    return f"**{match_label(match)}** concluded! Thanks for playing! \U0001fae1"
+
+
+def build_cancelled_ongoing_line(match) -> str:
+    """Same idea as build_concluded_ongoing_line, for the cancel path."""
+    t = match["type"]
+    if t in ("mix", "6s_mix"):
+        team = match["team_name"] or "Mix"
+        suffix = " (6s)" if t == "6s_mix" else ""
+        return f"Mix with **{team}**{suffix} was cancelled."
+    elif t in ("opug", "6s_opug"):
+        division = match["division"] or "PUG"
+        suffix = " (6s)" if t == "6s_opug" else ""
+        return f"**{division}** PUG{suffix} was cancelled."
+    elif t in ("fresh_pug", "6s_fresh_pug"):
+        label = "Fresh PUG 6v6" if t == "6s_fresh_pug" else "Fresh PUG"
+        return f"**{label}** was cancelled."
+    return f"**{match_label(match)}** was cancelled."
 
 
 def build_roster_icon_lines(roster_str, is_sixs=False) -> str:

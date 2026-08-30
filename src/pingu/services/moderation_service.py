@@ -44,10 +44,23 @@ async def apply_penalty(guild: discord.Guild, user_id: int, penalty_type: str, i
             await member.add_roles(role, reason=reason or f"Penalty: {penalty_type}")
 
 
-async def expire_penalties(guild: discord.Guild, role_id: int = None):
-    """Called by the scheduler sweep — removes the role for anything past expires_at."""
+async def expire_penalties(guild: discord.Guild, role_ids: dict = None):
+    """
+    Called by the scheduler sweep -- removes the role for anything past
+    expires_at. role_ids maps penalty type -> role_id (e.g.
+    {"low_prio": ..., "mix_ban": ...}), looked up per PENALTY's own type
+    -- not a single external role_id applied to everything, which is
+    what this used to take. That only worked while Low Priority was the
+    only penalty type that existed; the moment a second type with its
+    own separate role existed, a single shared role_id would have tried
+    to remove the wrong role from some expiring penalties while never
+    removing the right one from others.
+    """
+    if role_ids is None:
+        role_ids = {}
     expired = await penalties_db.get_expired_active_penalties()
     for penalty in expired:
+        role_id = role_ids.get(penalty["type"])
         if role_id:
             member = guild.get_member(penalty["user_id"])
             role = guild.get_role(role_id)

@@ -24,7 +24,7 @@ class FreshPugAlreadyActive(Exception):
 
 
 async def create(bot, guild, creator_id, creator_name, maps: str, server: str,
-                  division: str = "Any", match_type: str = "fresh_pug") -> int:
+                  match_type: str = "fresh_pug") -> int:
     existing = await matches_db.get_active_fresh_pug() if match_type == "fresh_pug" \
         else await matches_db.get_active_6s_fresh_pug()
     if existing:
@@ -35,7 +35,7 @@ async def create(bot, guild, creator_id, creator_name, maps: str, server: str,
         timestamp=int(time.time()),
         created_by=creator_id,
         created_by_name=creator_name,
-        division=division,
+        division=None,
         map_name=maps or "tbc",
         server=server,
     )
@@ -45,7 +45,7 @@ async def create(bot, guild, creator_id, creator_name, maps: str, server: str,
             else await matches_db.get_active_6s_fresh_pug()
         raise FreshPugAlreadyActive(existing)
 
-    result = await channel_service.create_match_channels(guild, match_id, match_type, division=division)
+    result = await channel_service.create_match_channels(guild, match_id, match_type, creator_id=creator_id)
     if not result:
         return match_id  # match exists, but no category configured -- caller should warn
     channel_id, _ = result

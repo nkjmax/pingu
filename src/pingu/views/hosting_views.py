@@ -134,6 +134,48 @@ async def _post_accepted_mix(interaction: discord.Interaction, match_id: int):
     return requester, None
 
 
+async def _delete_request_thread(interaction: discord.Interaction):
+    """
+    Shared by both accept() and deny() -- a resolved mix request's thread
+    has served its purpose either way, whether the outcome was approval
+    or denial. Previously only accept() had this cleanup, which is why
+    denied requests' threads were silently piling up forever -- deny()
+    just posted a message and stopped, never touching the thread at all.
+
+    Discord auto-posts a "X started a thread: Y" system message in the
+    PARENT channel when a thread is created -- deleting the thread itself
+    does NOT remove that notification. For a thread created directly on a
+    channel (not from an existing message), that system message shares
+    the thread's own ID, so this is usually a direct hit; the
+    history-scan fallback covers cases where that assumption doesn't hold.
+    """
+    if not isinstance(interaction.channel, discord.Thread):
+        return
+
+    parent = interaction.channel.parent
+    thread_id = interaction.channel.id
+    try:
+        await interaction.channel.delete()
+    except discord.HTTPException:
+        pass
+
+    if parent:
+        try:
+            sys_msg = await parent.fetch_message(thread_id)
+            await sys_msg.delete()
+        except discord.HTTPException:
+            try:
+                async for msg in parent.history(limit=50):
+                    if (
+                        msg.type == discord.MessageType.thread_created
+                        and msg.thread and msg.thread.id == thread_id
+                    ):
+                        await msg.delete()
+                        break
+            except Exception:
+                pass
+
+
 class MixRequestReviewView(ui.View):
     """Shown via /manage when run inside a mix-request thread, once the
     requester has posted their roster."""
@@ -168,36 +210,7 @@ class MixRequestReviewView(ui.View):
 
         # The mix now lives in its own channel/thread -- the request
         # thread has served its purpose.
-        if isinstance(interaction.channel, discord.Thread):
-            parent = interaction.channel.parent
-            thread_id = interaction.channel.id
-            try:
-                await interaction.channel.delete()
-            except discord.HTTPException:
-                pass
-
-            # Discord auto-posts a "X started a thread: Y" system message
-            # in the PARENT channel when a thread is created -- deleting
-            # the thread itself does NOT remove that notification. For a
-            # thread created directly on a channel (not from an existing
-            # message), that system message shares the thread's own ID,
-            # so this is usually a direct hit; the history-scan fallback
-            # covers cases where that assumption doesn't hold.
-            if parent:
-                try:
-                    sys_msg = await parent.fetch_message(thread_id)
-                    await sys_msg.delete()
-                except discord.HTTPException:
-                    try:
-                        async for msg in parent.history(limit=50):
-                            if (
-                                msg.type == discord.MessageType.thread_created
-                                and msg.thread and msg.thread.id == thread_id
-                            ):
-                                await msg.delete()
-                                break
-                    except Exception:
-                        pass
+        await _delete_request_thread(interaction)
 
         self.stop()
 
@@ -213,6 +226,11 @@ class MixRequestReviewView(ui.View):
         await interaction.response.send_message(
             f"<@{request['requester_id']}> your mix request was denied by a hoster."
         )
+
+        # Same cleanup as accept() -- a denied request's thread has also
+        # served its purpose, and previously nothing here ever deleted it.
+        await _delete_request_thread(interaction)
+
         self.stop()
 
     @ui.button(label="Edit request", style=discord.ButtonStyle.secondary, custom_id="mixreq_edit")

@@ -54,16 +54,7 @@ class ConcludeConfirmView(ui.View):
                 }
 
         await do_conclude(interaction.client, interaction.guild, self.match_id, interaction.user.id, opug_split=opug_split)
-        # do_conclude tears down the whole channel immediately -- if this
-        # command was run from inside that channel (the normal case), the
-        # channel is now gone and Discord can no longer deliver an
-        # ephemeral followup through it ("Unknown Channel"). Nothing to
-        # fix on our end beyond not crashing on it -- there's genuinely
-        # nowhere left to show the confirmation.
-        try:
-            await interaction.followup.send("\u2705 Match concluded, archived, and channels removed.", ephemeral=True)
-        except discord.HTTPException:
-            pass
+        await interaction.followup.send("\u2705 Match concluded, archived, and channels removed.", ephemeral=True)
 
     @ui.button(label="Never mind", style=discord.ButtonStyle.secondary)
     async def abort(self, interaction, button):
@@ -78,21 +69,14 @@ class CancelConfirmView(ui.View):
     async def confirm(self, interaction, button):
         await interaction.response.defer(ephemeral=True)
         success = await do_cancel(interaction.client, interaction.guild, self.match_id)
-        # Same as ConcludeConfirmView -- do_cancel already deleted the
-        # channel this interaction came from by this point, so the
-        # followup has nowhere left to render. Not an error worth crashing
-        # on.
-        try:
-            if success:
-                await interaction.followup.send(
-                    "\u2705 Match cancelled, archived, and channels removed.", ephemeral=True
-                )
-            else:
-                await interaction.followup.send(
-                    "\u274c Could not cancel \u2014 match may already be ended.", ephemeral=True
-                )
-        except discord.HTTPException:
-            pass
+        if success:
+            await interaction.followup.send(
+                "\u2705 Match cancelled, archived, and channels removed.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                "\u274c Could not cancel \u2014 match may already be ended.", ephemeral=True
+            )
 
     @ui.button(label="Never mind", style=discord.ButtonStyle.secondary)
     async def abort(self, interaction, button):
@@ -197,13 +181,10 @@ class OPugCancelAfterStartView(ui.View):
     async def confirm(self, interaction, button):
         await interaction.response.defer(ephemeral=True)
         success = await do_cancel(interaction.client, interaction.guild, self.match_id)
-        try:
-            if success:
-                await interaction.followup.send("\u2705 Match cancelled.", ephemeral=True)
-            else:
-                await interaction.followup.send("\u274c Could not cancel.", ephemeral=True)
-        except discord.HTTPException:
-            pass
+        if success:
+            await interaction.followup.send("\u2705 Match cancelled.", ephemeral=True)
+        else:
+            await interaction.followup.send("\u274c Could not cancel.", ephemeral=True)
 
     @ui.button(label="Never mind", style=discord.ButtonStyle.secondary)
     async def abort(self, interaction, button):
@@ -273,7 +254,18 @@ class ManageView(ui.View):
 
     @classmethod
     async def create(cls, match_id):
-        return cls(match_id)
+        self = cls(match_id)
+        # Only mixes have a captain concept at all -- oPUG and fresh pug
+        # should never even see this button, not just have it be a
+        # harmless no-op when clicked. Added dynamically here rather than
+        # as a static @ui.button decorator, since a decorator has no way
+        # to conditionally skip itself based on match type.
+        match = await matches_db.get_match(match_id)
+        if match and match["type"] in ("mix", "6s_mix"):
+            btn = ui.Button(label="Review captain picks", style=discord.ButtonStyle.primary, row=0)
+            btn.callback = self._review_captain_picks
+            self.add_item(btn)
+        return self
 
     @ui.button(label="Accept players", style=discord.ButtonStyle.primary, row=0)
     async def review_pending(self, interaction, button):
@@ -322,15 +314,8 @@ class ManageView(ui.View):
             "Select a class to restore a denied player to pending:", view=view, ephemeral=True
         )
 
-    @ui.button(label="Review captain picks", style=discord.ButtonStyle.primary, row=0)
-    async def review_captain_picks(self, interaction, button):
-        """
-        For mix-request matches only (has a captain) -- shows picks the
-        captain has already screened (status=awaiting_hoster) via
-        /manage-signups, waiting on final hoster approval. Harmless no-op
-        panel for matches with no captain (opug, hoster-created mixes),
-        since HosterPicksReviewView just shows "nothing awaiting review".
-        """
+    async def _review_captain_picks(self, interaction: discord.Interaction):
+        """Only reachable for mixes now -- see create() above."""
         from pingu.views.roster_views import HosterPicksReviewView
         view = await HosterPicksReviewView.create(self.match_id, interaction.client.ui_updater)
         await interaction.response.send_message(

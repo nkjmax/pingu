@@ -33,6 +33,17 @@ def is_hoster(interaction: discord.Interaction) -> bool:
     return any(r.id == config.HOSTER_ROLE_ID for r in interaction.user.roles)
 
 
+def is_fresh_pug_owner(interaction: discord.Interaction, match) -> bool:
+    """A fresh pug's own creator can /manage it -- but ONLY that one
+    fresh pug, never any other match. /host-request's fresh pug path is
+    open to anyone, not just hosters, so its creator isn't necessarily a
+    hoster at all -- this is the narrow exception. Same helper as the one
+    in cogs/hosting.py's /connect-string gating, kept local here rather
+    than shared since is_hoster itself is already duplicated per-cog in
+    this codebase."""
+    return match["type"] in ("fresh_pug", "6s_fresh_pug") and match["created_by"] == interaction.user.id
+
+
 class ManageCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -81,7 +92,7 @@ class ManageCog(commands.Cog):
             await interaction.response.send_message("No active match found in this channel.", ephemeral=True)
             return
 
-        if not is_hoster(interaction):
+        if not is_hoster(interaction) and not is_fresh_pug_owner(interaction, match):
             hint = " Captains should use /manage-signups instead." if match["captain_id"] == interaction.user.id else ""
             await interaction.response.send_message(
                 f"You need to be a hoster to use this.{hint}", ephemeral=True

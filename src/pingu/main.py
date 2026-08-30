@@ -125,7 +125,7 @@ async def pingu_reply(message, has_hoster_role):
         client = Groq(api_key=config.GROQ_API_KEY)
         response = await asyncio.to_thread(
             lambda: client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=messages,
                 max_tokens=200,
             ).choices[0].message.content
@@ -155,6 +155,7 @@ COGS = [
     "pingu.cogs.manage",
     "pingu.cogs.linking",
     "pingu.cogs.moderation",
+    "pingu.cogs.tickets",
 ]
 
 intents = discord.Intents.default()
