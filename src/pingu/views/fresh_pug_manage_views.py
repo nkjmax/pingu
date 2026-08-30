@@ -17,6 +17,15 @@ from pingu.db import signups as signups_db
 from pingu.services.match_lifecycle_service import do_conclude, do_cancel
 
 
+def _is_mix_banned(interaction: discord.Interaction) -> bool:
+    """Same check as signup_views.py's ClassButton/OPugClassButton/
+    SixsClassButton -- Mix Ban is meant to keep someone out of organized
+    games generally, fresh pug included."""
+    if not config.MIX_BAN_ROLE_ID:
+        return False
+    return any(r.id == config.MIX_BAN_ROLE_ID for r in interaction.user.roles)
+
+
 async def refresh_fresh_pug_signup_list(client, match_id):
     """Edit the signup list message for a fresh pug to reflect current signups."""
     match = await matches_db.get_match(match_id)
@@ -53,6 +62,12 @@ class FreshPugSignupButton(ui.Button):
         if not match or match["ended"]:
             await interaction.followup.send(
                 "This Fresh PUG has already ended or been cancelled.", ephemeral=True
+            )
+            return
+
+        if _is_mix_banned(interaction):
+            await interaction.followup.send(
+                "\u274c You currently have a Mix Ban and can't sign up for matches.", ephemeral=True
             )
             return
 

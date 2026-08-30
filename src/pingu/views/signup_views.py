@@ -14,6 +14,18 @@ from pingu.services import roster_service
 from pingu.views.signout_views import SignOutButton
 
 
+def _is_mix_banned(interaction: discord.Interaction) -> bool:
+    """Checked at the top of every sign-up button's callback -- covers
+    mix, oPUG, and 6s alike (Mix Ban is meant to keep someone out of
+    organized games generally, not one specific match type). Does NOT
+    cover a hoster manually @mentioning a banned player into the free-
+    text host roster field -- that's a different code path entirely
+    (parsed text, not a button click), out of scope here."""
+    if not config.MIX_BAN_ROLE_ID:
+        return False
+    return any(r.id == config.MIX_BAN_ROLE_ID for r in interaction.user.roles)
+
+
 class ClassButton(ui.Button):
     def __init__(self, class_name, match_id):
         super().__init__(
@@ -33,6 +45,12 @@ class ClassButton(ui.Button):
         if not match or match["ended"]:
             await interaction.followup.send(
                 "This match has already ended or been cancelled.", ephemeral=True
+            )
+            return
+
+        if _is_mix_banned(interaction):
+            await interaction.followup.send(
+                "\u274c You currently have a Mix Ban and can't sign up for matches.", ephemeral=True
             )
             return
 
@@ -193,6 +211,12 @@ class OPugClassButton(ui.Button):
             )
             return
 
+        if _is_mix_banned(interaction):
+            await interaction.followup.send(
+                "\u274c You currently have a Mix Ban and can't sign up for matches.", ephemeral=True
+            )
+            return
+
         existing_class = await signups_db.get_signup_by_user_and_class(self.match_id, interaction.user.id, self.class_name)
         if existing_class and existing_class["status"] == "cancelled":
             existing_class = None
@@ -267,6 +291,11 @@ class SixsClassButton(ui.Button):
         match = await matches_db.get_match(self.match_id)
         if not match or match["ended"]:
             await interaction.followup.send("This match has already ended.", ephemeral=True)
+            return
+        if _is_mix_banned(interaction):
+            await interaction.followup.send(
+                "\u274c You currently have a Mix Ban and can't sign up for matches.", ephemeral=True
+            )
             return
         if interaction.user.id in roster_service.host_roster_user_ids(match["host_roster"]):
             await interaction.followup.send(
