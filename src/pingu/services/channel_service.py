@@ -40,6 +40,7 @@ import discord
 
 from pingu import config
 from pingu.db import matches as matches_db
+from pingu.templates.emojis import MATCH_CHANNEL_PREFIX
 
 
 def category_id_for_type(match_type: str):
@@ -75,7 +76,13 @@ def channel_label_for_match(match_type: str, slot: int, team_name: str = None, d
 
     if match_type not in ("fresh_pug", "6s_fresh_pug"):
         slug = f"{slug}-{slot}"
-    return slug[:100]
+
+    # Prefix applied AFTER slugifying/truncating logic, never fed through
+    # _slug() (which would strip it right back out) -- and the 100-char
+    # Discord limit is applied to the FULL name including the prefix, not
+    # just the slug portion, so a maximally-long slug doesn't push the
+    # combined name over the limit.
+    return (MATCH_CHANNEL_PREFIX + slug)[:100]
 
 
 def _mix_opug_overwrites(guild: discord.Guild) -> dict:
@@ -142,8 +149,8 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
         text_channel = await category.create_text_channel(name=label, overwrites=overwrites)
         div_slug = _slug(division or "pug")
         if vc_category:
-            red_vc = await vc_category.create_voice_channel(name=f"{div_slug}-red-{slot}")
-            blu_vc = await vc_category.create_voice_channel(name=f"{div_slug}-blu-{slot}")
+            red_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-red-{slot}")
+            blu_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-blu-{slot}")
             vc_ids["red"] = red_vc.id
             vc_ids["blu"] = blu_vc.id
     else:
@@ -184,10 +191,10 @@ async def _create_fresh_pug_channels(guild: discord.Guild, category: discord.Cat
 
     vc_ids = {}
     if vc_category:
-        waiting_room = await vc_category.create_voice_channel(name="waiting-room")
-        fresh_lobby  = await vc_category.create_voice_channel(name="fresh-lobby")
-        fresh_red    = await vc_category.create_voice_channel(name="fresh-red")
-        fresh_blu    = await vc_category.create_voice_channel(name="fresh-blu")
+        waiting_room = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}waiting-room")
+        fresh_lobby  = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-lobby")
+        fresh_red    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-red")
+        fresh_blu    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-blu")
         vc_ids = {
             "waiting_room": waiting_room.id,
             "fresh_lobby": fresh_lobby.id,
