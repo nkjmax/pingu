@@ -8,7 +8,7 @@ without touching any message-building logic.
 CLASS_EMOJI = {
     "Scout":    "<:tf_scout:1536052419564150874>",
     "Soldier":  "<:tf_soldier:1536052610279153734>",
-    "Pyro":     "<:tf2pyro:1174403417616175154>",
+    "Pyro":     "<:tf_pyro:1174403417616175154>",
     "Demoman":  "<:tf_demo:1536052673466470430>",
     "Heavy":    "<:tf_heavy:1536052704785342535>",
     "Engineer": "<:tf_engineer:1536052742131425370>",
