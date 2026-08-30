@@ -20,6 +20,7 @@ from pingu.embeds import (
 )
 from pingu.db import matches as matches_db
 from pingu.db import signups as signups_db
+from pingu.services import roster_service
 from pingu.services.match_lifecycle_service import do_conclude, do_cancel
 from pingu.views.review_views import ReviewView, DenyReviewView
 from pingu.views.split_views import SplitView, SixsSplitView
@@ -262,7 +263,13 @@ class ManageView(ui.View):
         # to conditionally skip itself based on match type.
         match = await matches_db.get_match(match_id)
         if match and match["type"] in ("mix", "6s_mix"):
-            btn = ui.Button(label="Review captain picks", style=discord.ButtonStyle.primary, row=0)
+            # Count of distinct PLAYERS with an outstanding captain
+            # decision (accept and/or deny proposals) -- matches how the
+            # review panel itself groups by player, not by signup row.
+            by_player = await roster_service.get_captain_decisions_by_player(match_id)
+            count = len(by_player)
+            label = f"Review captain picks ({count})" if count else "Review captain picks"
+            btn = ui.Button(label=label, style=discord.ButtonStyle.primary, row=0)
             btn.callback = self._review_captain_picks
             self.add_item(btn)
         return self

@@ -7,204 +7,115 @@ Single Discord bot process. TF2 competitive pug/mix/scrim hosting for one privat
 1. **One process, one bot token.** No Redis, no Docker, no multi-process — except Pingu Broadcast, which stays a separate small process for permission/blast-radius isolation.
 2. **Layering is one-directional:** `cogs` (Discord entry points) → `views` (buttons/modals, thin) → `services` (business logic, no Discord calls) → `db` (SQLite access, one file per table). Nothing skips a layer. Services never touch Discord directly; only `views` and `ui_updater` do.
 3. **One edit point.** Every message edit goes through `ui_updater.schedule_refresh()`, which debounces ~300ms and performs one combined edit instead of one edit per action.
-4. **Constraints over app-level locks.** Fresh pug's "only one active" rule is a DB unique constraint, not an in-memory flag or Redis key.
-5. **Proposals, not direct writes.** A captain never writes to `signups` directly — they write to `roster_proposals`, and the hoster's approval is what commits it.
+4. **Constraints over app-level locks.** Fresh pug's "only one active" rule is a DB unique index, not an in-memory flag.
+5. **Proposals, not direct writes.** A captain never writes an accepted/denied signup directly — they set `signups.captain_decision` (`'accept'`/`'deny'`), and the hoster's own Approve/Reject action is what actually commits it via `roster_service.finalise_accept`/`finalise_deny`. Status stays `'pending'` the whole time a captain proposal is outstanding, so nothing changes for players until a hoster actually confirms it.
 
 ## Match type gating
 
 | Type | Who creates it | What blocks duplicates |
 |---|---|---|
-| Mix | Anyone submits a host request; a hoster approves it | Hoster approval is the gate |
-| oPUG | Hoster role only, created directly | Role check is the gate |
-| Fresh PUG | Anyone, created directly | DB unique constraint: one `status='live'` row per fresh-pug type at a time |
+| Mix | `/host` (hoster, direct) or `/host-request` → hoster approval (requester becomes captain) | Hoster role, or hoster approval |
+| oPUG | `/host`, hoster role only | Role check |
+| Fresh PUG | `/host` or `/host-request`, open to anyone | DB unique index: one `ended=0` row per fresh-pug type at a time. No division, no scheduled time — assumed to happen once enough people sign up. The creator gets `/manage`, `/edit`, `/connect-string`, and `/ping` scoped to that one fresh pug even if they're not a hoster. |
 
 ## Directory structure
 
 ```
 pingu/
-├── main.py
-├── config.py
-├── cogs/
-│   ├── hosting.py
-│   ├── fresh_pug.py
-│   ├── opug.py
-│   ├── manage.py
-│   ├── roster.py
-│   ├── linking.py
-│   ├── moderation.py
-│   ├── tickets.py
-│   └── admin.py
-├── views/
-│   ├── hosting_views.py
-│   ├── roster_views.py
-│   ├── fresh_pug_views.py
-│   └── manage_views.py
-├── services/
-│   ├── hosting_service.py
-│   ├── fresh_pug_service.py
-│   ├── roster_service.py
-│   ├── archive_service.py
-│   ├── log_service.py
-│   ├── moderation_service.py
-│   └── channel_service.py
-├── ui/
-│   └── ui_updater.py
-├── db/
-│   ├── __init__.py
-│   ├── matches.py
-│   ├── signups.py
-│   ├── host_requests.py
-│   ├── roster_proposals.py
-│   ├── players.py
-│   ├── match_logs.py
-│   ├── penalties.py
-│   ├── tickets.py
-│   └── guild_settings.py
-├── embeds.py
-└── scheduler.py
-
-pingu_broadcast/          # separate process, reads pingu's db read-only
-└── main.py
+├── src/pingu/
+│   ├── main.py
+│   ├── config.py
+│   ├── embeds.py
+│   ├── scheduler.py
+│   ├── cogs/
+│   │   ├── hosting.py              # /host, /host-request wizard, /edit, /connect-string, /ping
+│   │   ├── host_request.py         # on_message listener: mix-request thread roster capture
+│   │   ├── manage.py               # /manage, /manage-signups
+│   │   ├── linking.py              # /link-logs, /view-logs
+│   │   ├── moderation.py           # flagged-content listener, /kill
+│   │   └── tickets.py              # /ticket
+│   ├── views/
+│   │   ├── hosting_views.py        # host-request choice, fresh pug modal, mix-request review/edit
+│   │   ├── roster_views.py         # CaptainReviewView, HosterPicksReviewView
+│   │   ├── signup_views.py         # class buttons, sign-up flow, host-roster @mention check
+│   │   ├── signout_views.py        # sign-out flow
+│   │   ├── review_views.py         # hoster accept/deny review panels
+│   │   ├── split_views.py          # oPUG team-splitting
+│   │   ├── fresh_pug_manage_views.py
+│   │   ├── roster_admin_views.py   # move-to-pending / restore-denied
+│   │   └── manage_views.py         # main /manage panel (ManageView, SlimManageView)
+│   ├── services/
+│   │   ├── hosting_service.py
+│   │   ├── fresh_pug_service.py
+│   │   ├── roster_service.py
+│   │   ├── match_lifecycle_service.py   # do_conclude/do_cancel, background archive+teardown
+│   │   ├── log_service.py               # logs.tf lookup by roster SteamIDs
+│   │   ├── moderation_service.py        # penalties: apply/expire
+│   │   ├── channel_service.py
+│   │   ├── ticket_export_service.py     # Excel mirror of tickets table
+│   │   └── ticket_archive_service.py
+│   ├── ui/
+│   │   └── ui_updater.py
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── matches.py
+│   │   ├── signups.py
+│   │   ├── host_requests.py
+│   │   ├── players.py
+│   │   ├── match_logs.py
+│   │   ├── penalties.py
+│   │   └── tickets.py
+│   └── templates/
+│       ├── roster_instructions.py
+│       ├── reminders.py
+│       └── ticket_taxonomy.py
+└── pingu_broadcast/
+    └── main.py
 ```
+
+`cogs/admin.py` and `db/guild_settings.py` were removed entirely — dead code from an early `/setup` design that was superseded by reading config straight from environment variables. There is no `roster_proposals` table; captain proposals live on `signups.captain_decision` instead (see design principle 5).
 
 ## cogs/ — Discord entry points
 
-Each cog owns slash commands and listeners for one feature area. Cogs call services; they never touch `db` directly.
-
-- **hosting.py** — `/host` (submit a request: team name, division, map, server pref). Hoster-facing approve/deny buttons live in `hosting_views.py`, wired here.
-- **fresh_pug.py** — `/freshpug` (create — open to anyone, rejected if one's already live), signup/leave buttons.
-- **opug.py** — hoster-only creation commands. Unchanged from current behaviour.
-- **manage.py** — `/manage` panel for a match's hoster (existing `ManageCog`, thinned to call services instead of `db` directly).
-- **roster.py** — captain "propose pick" commands/buttons, hoster "approve/reject" buttons.
-- **linking.py** — `/link <logs.tf profile url>` — stores the player's SteamID64.
-- **moderation.py** — `on_message` listener for flagged content; `/penalize` command for mods.
-- **tickets.py** — ban/report/suggestion ticket commands.
-- **admin.py** — `/setup` — lets admins set channel IDs, roles, thresholds into `guild_settings`.
+- **hosting.py** — `/host` (hoster-only wizard: mode → type → division → modal), `/edit`, `/connect-string`, `/ping`. Fresh pug's own creator can use `/edit`, `/connect-string`, and `/ping` on their own fresh pug even without the hoster role.
+- **host_request.py** — listens for a requester's roster ping inside a mix-request thread, captures it, posts the formatted roster, pings the hoster role.
+- **manage.py** — `/manage` (branches: pending roster-filled mix-request thread → accept/deny; fresh pug → conclude/cancel view; mix/oPUG → full `ManageView`) and `/manage-signups` (captain-only screening).
+- **linking.py** — `/link-logs` (paste a logs.tf profile URL, grants `LOGS_LINKED_ROLE_ID`), `/view-logs` (open to everyone, look up anyone's linked profile).
+- **moderation.py** — flagged-content `on_message` listener, and `/kill` (apply a Low Priority or Mix Ban penalty: player → type dropdown → one modal for number/unit/reason).
+- **tickets.py** — `/ticket`: cascading dropdowns of variable depth (see `templates/ticket_taxonomy.py`) ending in a description modal.
 
 ## views/ — UI only
 
-Discord `View`/`Modal` classes. Read state, call a service method, done. No business logic, no direct `db` calls.
-
-- **hosting_views.py** — `HostRequestApproveView`, `HostRequestDenyButton`.
-- **roster_views.py** — `ProposePickView`, `ApproveProposalView`.
-- **fresh_pug_views.py** — `FreshPugSignupView`, `FreshPugManageView`.
-- **manage_views.py** — existing manage-panel views, ported as-is.
+Discord `View`/`Modal` classes. Read state, call a service, done.
 
 ## services/ — business logic
 
-No Discord API calls except through `ui_updater`. This is what's unit-testable.
+No Discord API calls except through `ui_updater`.
 
-- **hosting_service.py**
-  - `submit_request(requester_id, team_name, division, map_name, server) -> host_request_id`
-  - `approve_request(host_request_id, hoster_id) -> match_id` — creates the match, makes requester captain
-  - `deny_request(host_request_id, hoster_id, reason)`
-
-- **fresh_pug_service.py**
-  - `create(creator_id, maps, server) -> match_id | RejectedAlreadyActive`
-  - `join(match_id, user_id)` / `leave(match_id, user_id)`
-  - `try_launch(match_id)` — checks fill, flips status to `live`
-
-- **roster_service.py**
-  - `propose_pick(match_id, captain_id, target_user_id, class_name) -> proposal_id`
-  - `approve_proposal(proposal_id, hoster_id)` — commits to `signups`
-  - `reject_proposal(proposal_id, hoster_id)`
-
-- **archive_service.py**
-  - `conclude(match_id, triggered_by)` — orchestrates: pulls roster, calls `log_service`, builds summary, posts to archive channel, tears down channels via `channel_service`
-  - `cancel(match_id, triggered_by)`
-
-- **log_service.py**
-  - `find_candidate_logs(match_id) -> list[LogCandidate]` — queries logs.tf by roster SteamIDs, scores by roster-overlap within the match's time window
-  - `fetch_log_stats(log_id) -> {score, damage_by_team, map_name}`
-
-- **moderation_service.py**
-  - `handle_violation(message)` — auto-warn, log to `penalties`/mod channel
-  - `apply_penalty(user_id, type, duration, issued_by)`
-  - `expire_penalties()` — called by scheduler sweep
-
-- **channel_service.py**
-  - `create_match_channels(match_id) -> category_id` — text + VC(s), scoped permission overwrites
-  - `teardown_match_channels(match_id)`
-
-## ui/ui_updater.py
-
-- `schedule_refresh(match_id)` — enqueues a refresh, debounced ~300ms
-- Internal loop performs one combined edit (main embed, pending list, ongoing-matches line) per flush instead of one edit per signup action
+- **roster_service.py** — `is_lp`, `reorder_class_roster`, `host_roster_user_ids` (parses `@mention`s out of a host roster — the only reliably-detectable entries), `captain_propose_accept`/`captain_propose_deny`, `finalise_accept`/`finalise_deny` (the one place a signup actually gets resolved, used by every accept/deny entry point), `commit_player_decisions`/`commit_all_captain_decisions` (Approve), `reject_player_decisions`/`reject_all_captain_decisions` (Reject). `finalise_accept` blocks accepting a Low-Priority player into a mix/oPUG until within 2 hours of kickoff; fresh pug is exempt (no kickoff time to measure against).
+- **match_lifecycle_service.py** — `do_conclude`/`do_cancel` tear down channels and delete the ongoing-matches line immediately (no delayed notice). Archiving runs as a background task (`fire_archive_and_teardown`) so the hoster's own confirmation doesn't wait on it — posts progress in `HOSTER_CHANNEL_ID` at 25/50/75/100% of the thread-copy step specifically (the one part whose duration scales with thread size), sequenced strictly before teardown.
+- **log_service.py** — searches logs.tf by the accepted roster's linked SteamID64s, scores candidates by roster overlap within a time window from kickoff, attaches qualifying logs to the archive summary. No API key needed (public logs.tf endpoints).
+- **moderation_service.py** — `apply_penalty`/`expire_penalties`. `expire_penalties` looks up the correct role per-penalty by type (`low_prio` → `LOW_PRIO_ROLE_ID`, `mix_ban` → `MIX_BAN_ROLE_ID`), not a single shared role.
+- **ticket_archive_service.py** — same archive-then-teardown background-task shape as `match_lifecycle_service`, retargeted: posts to `TICKET_ARCHIVE_CHANNEL_ID`, titles the archived thread with the ticket number.
+- **ticket_export_service.py** — keeps a local `.xlsx` mirror of the tickets table (not the source of truth — SQLite is), updated incrementally. `openpyxl` is synchronous, so every call goes through `asyncio.to_thread()` to avoid blocking the event loop.
 
 ## db/ — one file per table, plain async functions
 
-- **matches.py** — `matches` table: `id, type, status, map_name, timestamp, channel_id, category_id, host_request_id`. Fresh-pug singleton enforced here via partial unique index.
-- **signups.py** — `signups` table: `id, match_id, user_id, class_name, status`.
-- **host_requests.py** — `host_requests` table: `id, requester_id, status, notes`.
-- **roster_proposals.py** — `roster_proposals` table: `id, match_id, captain_id, target_user_id, status`.
-- **players.py** — `players` table: `user_id, steamid64, logs_tf_profile`.
-- **match_logs.py** — `match_logs` table: `id, match_id, logs_tf_url, score_red, score_blu` (one-to-many — multi-map mixes get multiple rows).
-- **penalties.py** — `penalties` table: `id, user_id, type, expires_at`.
-- **tickets.py** — `tickets` table: `id, user_id, type, status, related_match_id`.
-- **guild_settings.py** — channel/role IDs, thresholds, instead of hardcoding.
+- **matches.py** — captain role is dynamic and per-team (`{team} Captain`, created/deleted with the match), not a static role. `channel_slot` is "how many of this team/division are currently active," not the match ID, so slot numbers get reused once a match concludes rather than climbing forever.
+- **tickets.py** — `ticket_number` (`CAT-YYYYMMDD-NN`), counted per category per SGT calendar day, monotonic (a cancelled ticket's number is never reused, even within the same day).
 
-## scheduler.py
+## Tickets
 
-Existing jobs (unchanged): `clean_cancel_notices`, `clean_conclude_notices`, `send_1h_reminders`, `send_8h_reminders`, `re_sort`.
-New job: `expire_penalties` sweep (removes ban/low-prio roles once `expires_at` passes).
+`/ticket` → category dropdown → (if that branch has one) subcategory → type → one modal with a single description field. On submit: a fully private channel is created (reporter + `MOD_ROLE_ID` only — `@everyone` can't even view it), named after the ticket number. The reporter can see the channel but only type in its thread; mods can type in both. Resolve (mod-only) and Cancel (anyone with access) both go through a confirmation step, then archive-and-delete runs in the background.
+
+## Fresh PUG
+
+Divisionless, no scheduled time — created via a single modal (map only) once past the initial mode choice. `/ping` on a fresh pug just pings the generic PUG role.
+
+## Config
+
+Sourced entirely from environment variables (`.env`), read in `config.py`. No `/setup` command, no `guild_settings` table.
 
 ## pingu_broadcast/
 
-Separate bot process and token. Reads the same SQLite file (read-only) to post approved promotions/mix announcements into other servers. Not part of the layered structure above — deliberately isolated.
-
-## Changelog from initial scaffold
-
-- `/host` stays open to everyone (mix requests). Hoster-only `/opug` direct-create is not yet built — see `cogs/opug.py`. True per-role command hiding needs to be configured in Discord's Server Settings > Integrations once it exists (set `default_member_permissions=Permissions.none()` on it), not something the bot can declare alone.
-- `/propose` and `/conclude` removed as standalone commands. Both now happen through `/manage`, which branches by caller: the match's `captain_id` sees `CaptainReviewView` (screen incoming signups), a hoster sees `ManageActionsView` (review picks / conclude / cancel).
-- `signups.status` gained an `awaiting_hoster` state: captain accepts a signup -> limbo -> hoster gives final accept/deny, with an "accept all" shortcut.
-- `matches.captain_id` added, set to the original requester on host-request approval — distinct from `created_by` (the approving hoster).
-- `db/roster_proposals.py` is now unused (superseded by the signup-status lifecycle above) — left in place, harmless, safe to delete later.
-- `/link` renamed to `/verify`, same behavior.
-- `/penalize` and `/setup` held off — not loaded in `main.py`. `config.py` now reads settings straight from environment variables (see `.env.example`) instead of the `/setup` + `guild_settings` DB path.
-- `/ticket` held off — `cogs/tickets.py` not loaded, pending more design.
-
-## /host-request redesign
-
-- `/host-request` is now the single entry point for non-hosters, replacing the earlier open `/host`. Running it shows two buttons: **Fresh PUG** (opens a small modal for maps/server, same singleton-enforced creation as before) and **Request a mix** (opens a modal for team/division/map/server).
-- Your original hoster-only `/host` (direct mix creation, no request step) is untouched — it's not part of this scaffold at all; see `cogs/hosting.py` for the pointer back to your existing `schedule.py`.
-- On "Request a mix" submit: a `host_requests` row is created, a thread is opened under `MIX_REQUESTS_CHANNEL_ID`, and the requester gets an ephemeral prompt to go ping their team in that thread.
-- A message listener in `cogs/host_request.py` watches that thread: once the requester's ping message lands, it saves the roster, posts a summary, and pings the hoster role.
-- A hoster runs `/manage` **inside that thread** — `cogs/manage.py` now checks "is this a pending, roster-filled mix-request thread" before falling back to the usual match-channel captain/hoster branching. Accept creates the match + channels via the existing `hosting_service.approve_request()` / `channel_service.create_match_channels()`, and assigns `CAPTAIN_ROLE_ID` if you've set one (in addition to the DB `captain_id`, which is what actually gates the captain's `/manage` view — the role is optional/cosmetic on top). Deny just marks it denied and pings the requester in-thread.
-- Threads auto-delete 24h after resolution via a new `close_expired_request_threads` scheduler job. Requests nobody ever actions are a known gap — their thread stays open indefinitely; not handled yet.
-- `/freshpug` no longer exists standalone — only reachable via `/host-request`.
-
-## Full port completion notes
-
-All 7 original files ported faithfully, verified both by `py_compile` and by
-a real import-trace through the actual `pingu` package (not just syntax
-checking):
-
-| Original | Ported to | Lines |
-|---|---|---|
-| `db.py` | `db/matches.py`, `db/signups.py`, `db/__init__.py` | ~50 functions, every table/column preserved |
-| `embeds.py` | `embeds.py` | 833 lines, every constant/emoji/channel ID kept |
-| `main.py` | `main.py` | Groq chatbot persona + `_pending_roster` message handler preserved |
-| `scheduler.py` | `scheduler.py` | all 5 original jobs, correct 1h/8h reminder semantics |
-| `manage.py` | `cogs/manage.py` | `cog_load` persistent-view registration, type branching |
-| `schedule.py` | `cogs/hosting.py` | 1,574 lines, full wizard + `/edit`, `/connect-string`, `/ping` |
-| `views.py` | `views/legacy.py` | 2,442 lines, every view/button/select class |
-
-**Config:** original `config.json` + `bot.config.get("key")` pattern replaced
-with `config.py` module attributes, sourced from `.env`. Every key the
-original used was tracked down during the port (some only surface deep in
-schedule.py/views.py) — see `.env.example` for the full list, including the
-structured ones (`MIX_CHANNELS` as comma-separated, `OPUG_CHANNELS`/`PING_ROLES`
-as multiple flat vars reassembled into dicts).
-
-**Your existing `matches.db`** will work as-is — `db/__init__.py` keeps the
-original filename and migrates new columns onto the existing tables via
-`ALTER TABLE`, same pattern the original bot used for its own migrations.
-
-**Deliberate deviations from the original**, all additive:
-- `matches.captain_id`, `category_id`, `host_request_id` — new columns for the mix-request flow
-- `signups.status` gained `awaiting_hoster` — captain-screens-then-hoster-confirms lifecycle
-- `do_archive`/`fire_archive_task` gained an optional `matched_logs` param — logs.tf score/damage/links, wired into `ConcludeConfirmView` and `FreshPugConcludeConfirmView`
-- New tables (`host_requests`, `players`, `match_logs`, `penalties`, `tickets`, `guild_settings`) sit alongside the original two, untouched
-
-Not ported (per earlier decisions in this conversation): `/penalize`, `/setup`,
-`/ticket` — held off, not loaded in `main.py`'s `COGS` list.
+Separate bot process and token. Reads the same SQLite file (read-only) to post approved promotions/mix announcements into other servers. Deliberately isolated from the layered structure above.

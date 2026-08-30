@@ -8,24 +8,16 @@ appended at the end of whichever branch fires, nothing else changed.
 
 import discord
 
-from pingu.templates.reminders import MATCH_REMINDER_LINES
+from pingu import config
+from pingu.templates.match_messages import FRESH_PUG_TEMPLATE, MIX_TEMPLATE, OPUG_TEMPLATE
+from pingu.templates.emojis import (
+    CLASS_EMOJI, SIXS_CLASS_EMOJI, PINGUU_ICON, PINGU_HAPPY_ICON, PING_ICON, FRESH_PUG_JOIN_EMOJI,
+)
 
 TF2_CLASSES = [
     "Scout", "Soldier", "Pyro", "Demoman",
     "Heavy", "Engineer", "Medic", "Sniper", "Spy"
 ]
-
-CLASS_EMOJI = {
-    "Scout":    "<:1_Scout:1353833221799804989>",
-    "Soldier":  "<:2_Soldier:1353833224358330519>",
-    "Pyro":     "<:3_Pyro:1353833227508383764>",
-    "Demoman":  "<:4_Demoman:1353833229731500033>",
-    "Heavy":    "<:5_Heavy:1353833232390557868>",
-    "Engineer": "<:6_Engineer:1353833234500157491>",
-    "Medic":    "<:7_Medic:1353833236605960323>",
-    "Sniper":   "<:8_Sniper:1353833239822733423>",
-    "Spy":      "<:9_Spy:1353833249373421680>",
-}
 
 DIVISIONS = [
     "Iron",
@@ -39,15 +31,6 @@ FP_DIVISIONS = ["Any", "Steel", "Silver", "Plat"]
 SIXS_DIVISIONS = ["Newcomer", "Div 3", "Div 2", "Div 1"]
 
 SIXS_CLASSES = ["PScout", "FScout", "PSoldier", "Roamer", "Demoman", "Medic"]
-
-SIXS_CLASS_EMOJI = {
-    "PScout":   "<:pscout:1448938338764591187>",
-    "FScout":   "<:fscout:1448941254678155346>",
-    "PSoldier": "<:psoldier:1448938400722718720>",
-    "Roamer":   "<:rsoldier:1448941835954294897>",
-    "Demoman":  "<:4_Demoman:1353833229731500033>",
-    "Medic":    "<:7_Medic:1353833236605960323>",
-}
 
 SIXS_OPUG_HEADER = {
     "Newcomer": "NEWCOMER PUG",
@@ -73,12 +56,33 @@ OPUG_HEADER = {
 }
 
 
+def _class_roster_block(cmap: dict, class_list: list, emoji_map: dict) -> str:
+    """One '> {emoji}: {name}' line per class, in class order -- the
+    per-class roster loop shared by mix/6s_mix's host-team and mix-team
+    columns. Can't be a template placeholder directly since it's a loop,
+    so this pre-renders it into one string block the caller fills in."""
+    return "\n".join(f"> {emoji_map[cls]}: {cmap.get(cls) or ''}" for cls in class_list)
+
+
+def _parse_vc_ids(match) -> dict:
+    """match['voice_channel_ids'] is a JSON blob (see db/matches.py) --
+    empty dict if unset (e.g. VC category wasn't configured at creation,
+    or this match predates the column existing at all)."""
+    import json
+    raw = match["voice_channel_ids"] if "voice_channel_ids" in match.keys() else None
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+
+
 def build_mix_message(match, signups, pug_role_id=None):
     mix_starters = {c: None for c in TF2_CLASSES}
-    mix_subs     = []
+    sub_by_player = {}
     denied       = []
 
-    sub_by_player = {}
     for s in signups:
         if s["status"] == "accepted":
             if mix_starters[s["class_name"]] is None:
@@ -90,18 +94,6 @@ def build_mix_message(match, signups, pug_role_id=None):
                 sub_by_player[uid]["classes"].append(s["class_name"])
         elif s["status"] == "denied":
             denied.append((f"<@{s['user_id']}>", s["class_name"]))
-
-    pending_raw = [s for s in signups if s["status"] == "pending"]
-    pending_by_player = {}
-    for s in pending_raw:
-        uid = s["user_id"]
-        if uid not in pending_by_player:
-            pending_by_player[uid] = {"user_id": uid, "classes": []}
-        pending_by_player[uid]["classes"].append(s["class_name"])
-    tf2_order = ["Scout", "Soldier", "Pyro", "Demoman", "Heavy", "Engineer", "Medic", "Sniper", "Spy"]
-    for uid in pending_by_player:
-        pending_by_player[uid]["classes"].sort(key=lambda c: tf2_order.index(c) if c in tf2_order else 99)
-    pending_list = list(pending_by_player.values())
 
     team_name = match["team_name"] or "Team"
     division  = match["division"]  or "tbc"
@@ -115,50 +107,36 @@ def build_mix_message(match, signups, pug_role_id=None):
     ts      = match["timestamp"]
     ts_line = f"<t:{ts}:F> <t:{ts}:R>" if ts else "tbc"
 
-    SEP = "> ---------------------------------------------"
-
     host_roster_raw = match["host_roster"] if match["host_roster"] else None
     host_entries = [e.strip() for e in host_roster_raw.split("\n")] if host_roster_raw else []
     while len(host_entries) < 9:
         host_entries.append("")
     host_map = {cls: host_entries[i] for i, cls in enumerate(TF2_CLASSES)}
 
-    def class_lines(cmap):
-        return "\n".join(
-            f"> {CLASS_EMOJI[cls]}: {cmap[cls] or ''}"
-            for cls in TF2_CLASSES
-        )
+    host_roster_block = _class_roster_block(host_map, TF2_CLASSES, CLASS_EMOJI)
+    mix_roster_block  = _class_roster_block(mix_starters, TF2_CLASSES, CLASS_EMOJI)
 
-    tf2_order = TF2_CLASSES
     subs_entries = []
     for p in sub_by_player.values():
-        p["classes"].sort(key=lambda c: tf2_order.index(c) if c in tf2_order else 99)
+        p["classes"].sort(key=lambda c: TF2_CLASSES.index(c) if c in TF2_CLASSES else 99)
         class_emojis = ", ".join(CLASS_EMOJI[c] for c in p["classes"])
         subs_entries.append(f"<@{p['user_id']}> - {class_emojis}")
-    subs_line = "\n> ".join(subs_entries) if subs_entries else ""
+    subs = "\n> ".join(subs_entries) if subs_entries else "\u2014"
 
-    all_lines = [
-        f"> ## \u2728 {team_name} vs Mix team {pug_ping}",
-        "> ",
-        f"> ## - Date : {ts_line}",
-        f"> - Division : {division}",
-        f"> - Map : **{map_name}**",
-        f"> - Server: {server}",
-        "> - Mode : **9v9 HL**",
-        f"> - Hoster: {hoster}",
-    ] + ([f"> - Captain: <@{match['captain_id']}>"] if match["captain_id"] else []) + [
-        SEP,
-        f"> {team_name} Team",
-        class_lines(host_map),
-        SEP,
-        "> Mix Team",
-        class_lines(mix_starters),
-        "> ",
-        f"> Subs : {subs_line}",
-        SEP,
-    ] + MATCH_REMINDER_LINES
+    captain_line = f"> **CAPTAIN**: <@{match['captain_id']}>\n" if match["captain_id"] else ""
 
-    return "\n".join(all_lines)
+    vc_ids = _parse_vc_ids(match)
+    vc_line = f"> **VC**: <#{vc_ids['vc']}>\n" if vc_ids.get("vc") else ""
+
+    rules_channel = f"<#{config.RULES_CHANNEL_ID}>" if config.RULES_CHANNEL_ID else "the rules channel"
+
+    return MIX_TEMPLATE.format(
+        header_icon=PINGU_HAPPY_ICON, team_name=team_name, date_time=ts_line,
+        division=division, pug_ping=pug_ping, map_name=map_name, server=server,
+        hoster=hoster, captain_line=captain_line, vc_line=vc_line,
+        host_roster_block=host_roster_block, mix_roster_block=mix_roster_block,
+        subs=subs, ping_icon=PING_ICON, rules_channel=rules_channel,
+    )
 
 
 def build_pending_message(match, signups):
@@ -358,37 +336,22 @@ def build_fresh_pug_signup_list(signups):
 
 def build_fresh_pug_message(match, pug_role_id=None):
     hoster   = f"<@{match['created_by']}>"
-    maps     = match["map_name"] or ""
+    maps     = match["map_name"] or "tbc"
+    server   = match["server"] or "tbc"
     role_id  = match["pug_role_id"] or pug_role_id
     pug_ping = f"<@&{role_id}>" if role_id else "@here"
-    vc_channel   = "<#1390666665410297869>"
-    spec_channel = "<#1354060038657806408>"
-    rules_channel = "<#1512763458536472728>"
 
-    map_line = f"> Maps: {maps}" if maps else "> Maps: tbc"
+    vc_ids = _parse_vc_ids(match)
+    fresh_lobby_vc = f"<#{vc_ids['fresh_lobby']}>" if vc_ids.get("fresh_lobby") else "the fresh lobby VC"
+    waiting_room_vc = f"<#{vc_ids['waiting_room']}>" if vc_ids.get("waiting_room") else "the waiting room VC"
+    rules_channel = f"<#{config.RULES_CHANNEL_ID}>" if config.RULES_CHANNEL_ID else "the rules channel"
 
-    lines = [
-        f"> # Fresh PUG",
-        f"> {pug_ping}",
-        "> ",
-        f"> **React with <:PUG:1367589835874893885> to join.** We'll host if we reach **18 players**.",
-        "> ",
-        map_line,
-        f"> Hoster: {hoster}",
-        "> ## **PUGGERS - PLEASE READ! \U0001f440 **",
-        "\u2605  **GENERAL**",
-        "> - Fresh PUGs are open to players of **all divisions**",
-        "> - Teams are re-picked before every map",
-        "> - Captains will **1v1 **as** Medic**. Winner gets the first pick",
-        f">    -  Captains pick players from {vc_channel}",
-        ">   - **Max 18 players.** The first map is **first come, first served**, so join early!",
-        "\u2605  **+1 PRIORITY**",
-        "> - Players who play Medic get **+1 priority** for the next map *(you may opt out)*",
-        f"> - Spectators should wait in {spec_channel} to receive +1 priority",
-        f">     - Joining the {vc_channel} before you're picked may forfeit your +1 priority",
-        f"-#  ** \u26a0  Please review {rules_channel} before joining!**",
-    ]
-    return "\n".join(lines)
+    return FRESH_PUG_TEMPLATE.format(
+        pinguu_icon=PINGUU_ICON, mode_suffix="", pug_ping=pug_ping, map_name=maps, server=server,
+        hoster=hoster, join_emoji=FRESH_PUG_JOIN_EMOJI, cap=18, ping_icon=PING_ICON,
+        fresh_lobby_vc=fresh_lobby_vc, waiting_room_vc=waiting_room_vc,
+        rules_channel=rules_channel,
+    )
 
 
 def build_opug_message(match, signups, pug_role_id=None):
@@ -411,57 +374,44 @@ def build_opug_message(match, signups, pug_role_id=None):
             else:
                 subs.append(f"<@{s['user_id']}>")
 
-    pending_raw = [s for s in signups if s["status"] == "pending"]
-    pending_by_player = {}
-    for s in pending_raw:
-        uid = s["user_id"]
-        if uid not in pending_by_player:
-            pending_by_player[uid] = {"user_id": uid, "classes": []}
-        pending_by_player[uid]["classes"].append(s["class_name"])
-    for uid in pending_by_player:
-        pending_by_player[uid]["classes"].sort(key=lambda c: TF2_CLASSES.index(c) if c in TF2_CLASSES else 99)
-
-    denied = []
-    for s in signups:
-        if s["status"] == "denied":
-            denied.append((f"<@{s['user_id']}>", s["class_name"]))
-
-    SEP = "> ---------------------------------------------"
-
-    lines = [
-        f"> # \u2728  {header} {pug_ping}",
-        f"> Division : {division}",
-        f"> ## Date : {ts_line}",
-        f"> Map : {map_name}",
-        f"> Server: {server}",
-        f"> Hoster: {hoster}",
-        "> Mode : Highlander 9v9",
-        "> ",
-    ]
-
+    roster_lines = []
     for cls in TF2_CLASSES:
         emoji = CLASS_EMOJI[cls]
         slot1 = slots[cls][0] if len(slots[cls]) > 0 else ""
         slot2 = slots[cls][1] if len(slots[cls]) > 1 else ""
-        lines.append(f"> {emoji}  : {slot1}")
-        lines.append(f"> {emoji}  : {slot2}")
+        roster_lines.append(f"> {emoji}  : {slot1}")
+        roster_lines.append(f"> {emoji}  : {slot2}")
+    roster_block = "\n".join(roster_lines)
 
-    lines.append("> ")
+    subs_str = " ".join(subs) if subs else "\u2014"
 
-    subs_line = " ".join(subs) if subs else ""
-    lines.append(f"> Sub : {subs_line}")
+    vc_ids = _parse_vc_ids(match)
+    vc_lines = ""
+    if vc_ids.get("red"):
+        vc_lines += f"> **RED VC**: <#{vc_ids['red']}>\n"
+    if vc_ids.get("blu"):
+        vc_lines += f"> **BLU VC**: <#{vc_ids['blu']}>\n"
 
-    lines.append("> ")
+    rules_channel = f"<#{config.RULES_CHANNEL_ID}>" if config.RULES_CHANNEL_ID else "the rules channel"
 
+    text = OPUG_TEMPLATE.format(
+        header_icon=PINGU_HAPPY_ICON, header=header, date_time=ts_line,
+        division=division, pug_ping=pug_ping, map_name=map_name, server=server,
+        hoster=hoster, vc_lines=vc_lines, roster_block=roster_block,
+        subs=subs_str, ping_icon=PING_ICON, rules_channel=rules_channel,
+    )
+
+    # Not part of the pasted template, but not something asked to be
+    # dropped either -- preserved as a trailing block rather than
+    # silently removed.
+    trailer_lines = []
     if division in ("Iron/Steel", "Steel"):
-        div_upper = division.upper()
-        lines.append(f"> **PRIORITISING {div_upper} ROLES, PLAT/SILVER OFFCLASSERS WILL BE HELD**")
+        trailer_lines.append(f"> **PRIORITISING {division.upper()} ROLES, PLAT/SILVER OFFCLASSERS WILL BE HELD**")
+    trailer_lines.append("> Captain will balance the team.")
+    trailer_lines.append("> Tag hoster in signup thread and write your preferred classes!")
+    trailer_lines.append("> Thank you and enjoy the game ! \u270c\ufe0f")
 
-    lines.append("> Captain will balance the team.")
-    lines.append("> Tag hoster in signup thread and write your preferred classes!")
-    lines.append("> Thank you and enjoy the game ! \u270c\ufe0f")
-
-    return "\n".join(lines)
+    return text + "\n" + "\n".join(trailer_lines)
 
 
 def build_opug_teams_message(match, red_team, blu_team, subs):
@@ -505,36 +455,22 @@ def build_split_view_text(red_team, blu_team):
 
 def build_6s_fresh_pug_message(match, pug_role_id=None):
     hoster   = f"<@{match['created_by']}>"
-    maps     = match["map_name"] or ""
+    maps     = match["map_name"] or "tbc"
+    server   = match["server"] or "tbc"
     role_id  = match["pug_role_id"] or pug_role_id
     pug_ping = f"<@&{role_id}>" if role_id else "@here"
-    vc_channel    = "<#1386223548137345135>"
-    spec_channel  = "<#1449606731574411395>"
-    rules_channel = "<#1512763458536472728>"
-    map_line = f"> Maps: {maps}" if maps else "> Maps: tbc"
 
-    lines = [
-        f"> # Fresh PUG **6v6**",
-        f"> {pug_ping}",
-        "> ",
-        f"> **React with <:PUG:1367589835874893885> to join.** We'll host if we reach **12 players**.",
-        "> ",
-        map_line,
-        f"> Hoster: {hoster}",
-        "> ## **PUGGERS - PLEASE READ! \U0001f440 **",
-        "\u2605  **GENERAL**",
-        "> - Fresh PUGs are open to players of **all divisions**",
-        "> - Teams are re-picked before every map",
-        "> - Captains will **1v1 **as** Medic**. Winner gets the first pick",
-        f">    -  Captains pick players from {vc_channel}",
-        ">   - **Max 18 players.** The first map is **first come, first served**, so join early!",
-        "\u2605  **+1 PRIORITY**",
-        "> - Players who play Medic get **+1 priority** for the next map *(you may opt out)*",
-        f"> - Spectators should wait in {spec_channel} to receive +1 priority",
-        f">     - Joining the {vc_channel} before you're picked may forfeit your +1 priority",
-        f"-#  ** \u26a0  Please review {rules_channel} before joining!**",
-    ]
-    return "\n".join(lines)
+    vc_ids = _parse_vc_ids(match)
+    fresh_lobby_vc = f"<#{vc_ids['fresh_lobby']}>" if vc_ids.get("fresh_lobby") else "the fresh lobby VC"
+    waiting_room_vc = f"<#{vc_ids['waiting_room']}>" if vc_ids.get("waiting_room") else "the waiting room VC"
+    rules_channel = f"<#{config.RULES_CHANNEL_ID}>" if config.RULES_CHANNEL_ID else "the rules channel"
+
+    return FRESH_PUG_TEMPLATE.format(
+        pinguu_icon=PINGUU_ICON, mode_suffix=" **6v6**", pug_ping=pug_ping, map_name=maps, server=server,
+        hoster=hoster, join_emoji=FRESH_PUG_JOIN_EMOJI, cap=12, ping_icon=PING_ICON,
+        fresh_lobby_vc=fresh_lobby_vc, waiting_room_vc=waiting_room_vc,
+        rules_channel=rules_channel,
+    )
 
 
 def build_6s_opug_message(match, signups, pug_role_id=None):
@@ -557,45 +493,42 @@ def build_6s_opug_message(match, signups, pug_role_id=None):
             else:
                 subs.append(f"<@{s['user_id']}>")
 
-    pending_raw = [s for s in signups if s["status"] == "pending"]
-    pending_by_player = {}
-    for s in pending_raw:
-        uid = s["user_id"]
-        if uid not in pending_by_player:
-            pending_by_player[uid] = {"user_id": uid, "classes": []}
-        pending_by_player[uid]["classes"].append(s["class_name"])
-    for uid in pending_by_player:
-        pending_by_player[uid]["classes"].sort(key=lambda c: SIXS_CLASSES.index(c) if c in SIXS_CLASSES else 99)
-
-    denied = [(f"<@{s['user_id']}>", s["class_name"]) for s in signups if s["status"] == "denied"]
-
-    SEP = "> ---------------------------------------------"
-    lines = [
-        f"> ## \u2728  {header} {pug_ping}",
-        "> ",
-        f"> Division : {division}",
-        f"> ## Date : {ts_line}",
-        f"> Map : {map_name}",
-        f"> Server: {server}",
-        f"> Hoster: {hoster}",
-        "> Mode : 6v6",
-        "> ",
-    ]
+    roster_lines = []
     for cls in SIXS_CLASSES:
         emoji = SIXS_CLASS_EMOJI[cls]
         slot1 = slots[cls][0] if len(slots[cls]) > 0 else ""
         slot2 = slots[cls][1] if len(slots[cls]) > 1 else ""
-        lines.append(f"> {emoji} : {slot1}")
-        lines.append(f"> {emoji} : {slot2}")
-    lines.append("> ")
-    subs_line = " ".join(subs) if subs else ""
-    lines.append(f"> Sub : {subs_line}")
-    lines.append("> ")
-    lines.append("> Captain will balance the team.")
-    lines.append("> Tag hoster in signup **thread** and write your preferred classes! **Ensure you specify roamer or pocket**")
-    lines.append("> Thank you and enjoy the game ! \u270c\ufe0f")
+        roster_lines.append(f"> {emoji} : {slot1}")
+        roster_lines.append(f"> {emoji} : {slot2}")
+    roster_block = "\n".join(roster_lines)
 
-    return "\n".join(lines)
+    subs_str = " ".join(subs) if subs else "\u2014"
+
+    vc_ids = _parse_vc_ids(match)
+    vc_lines = ""
+    if vc_ids.get("red"):
+        vc_lines += f"> **RED VC**: <#{vc_ids['red']}>\n"
+    if vc_ids.get("blu"):
+        vc_lines += f"> **BLU VC**: <#{vc_ids['blu']}>\n"
+
+    rules_channel = f"<#{config.RULES_CHANNEL_ID}>" if config.RULES_CHANNEL_ID else "the rules channel"
+
+    text = OPUG_TEMPLATE.format(
+        header_icon=PINGU_HAPPY_ICON, header=header, date_time=ts_line,
+        division=division, pug_ping=pug_ping, map_name=map_name, server=server,
+        hoster=hoster, vc_lines=vc_lines, roster_block=roster_block,
+        subs=subs_str, ping_icon=PING_ICON, rules_channel=rules_channel,
+    )
+
+    # Not part of the pasted template, but not something asked to be
+    # dropped either -- preserved as a trailing block, same reasoning as
+    # build_opug_message.
+    trailer_lines = [
+        "> Captain will balance the team.",
+        "> Tag hoster in signup **thread** and write your preferred classes! **Ensure you specify roamer or pocket**",
+        "> Thank you and enjoy the game ! \u270c\ufe0f",
+    ]
+    return text + "\n" + "\n".join(trailer_lines)
 
 
 def build_6s_mix_message(match, signups, pug_role_id=None):
@@ -615,19 +548,6 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
         elif s["status"] == "denied":
             denied.append((f"<@{s['user_id']}>", s["class_name"]))
 
-    pending_raw = [s for s in signups if s["status"] == "pending"]
-    pending_by_player = {}
-    for s in pending_raw:
-        uid = s["user_id"]
-        if uid not in pending_by_player:
-            pending_by_player[uid] = {"user_id": uid, "classes": []}
-        pending_by_player[uid]["classes"].append(s["class_name"])
-    for uid in pending_by_player:
-        pending_by_player[uid]["classes"].sort(key=lambda c: SIXS_CLASSES.index(c) if c in SIXS_CLASSES else 99)
-
-    for uid in sub_by_player:
-        sub_by_player[uid]["classes"].sort(key=lambda c: SIXS_CLASSES.index(c) if c in SIXS_CLASSES else 99)
-
     team_name = match["team_name"] or "Team"
     division  = match["division"] or "tbc"
     map_name  = match["map_name"] or "tbc"
@@ -637,22 +557,6 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
     pug_ping  = f"<@&{role_id}>" if role_id else "@here"
     ts        = match["timestamp"]
     ts_line   = f"<t:{ts}:F> <t:{ts}:R>" if ts else "tbc"
-    SEP = "> ---------------------------------------------"
-
-    def class_lines(cmap):
-        return "\n".join(
-            f"> {SIXS_CLASS_EMOJI[cls]}: {cmap[cls] or ''}"
-            for cls in SIXS_CLASSES
-        )
-
-    subs_entries = []
-    for p in sub_by_player.values():
-        p["classes"].sort(key=lambda c: SIXS_CLASSES.index(c) if c in SIXS_CLASSES else 99)
-        class_emojis = ", ".join(SIXS_CLASS_EMOJI[c] for c in p["classes"])
-        subs_entries.append(f"<@{p['user_id']}> - {class_emojis}")
-    subs_line = "\n> ".join(subs_entries) if subs_entries else ""
-
-    extra_lines = []
 
     host_roster_raw = match["host_roster"] if match["host_roster"] else None
     host_entries = [e.strip() for e in host_roster_raw.split("\n")] if host_roster_raw else []
@@ -660,27 +564,30 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
         host_entries.append("")
     host_map = {cls: host_entries[i] for i, cls in enumerate(SIXS_CLASSES)}
 
-    all_lines = [
-        f"> ## \u2728 {team_name} vs Mix team {pug_ping}",
-        "> ",
-        f"> ## - Date : {ts_line}",
-        f"> - Division : {division}",
-        f"> - Map : **{map_name}**",
-        f"> - Server: {server}",
-        "> - Mode : **6v6**",
-        f"> - Hoster: {hoster}",
-    ] + ([f"> - Captain: <@{match['captain_id']}>"] if match["captain_id"] else []) + [
-        SEP,
-        f"> {team_name} Team",
-        class_lines(host_map),
-        SEP,
-        "> Mix Team",
-        class_lines(mix_starters),
-        "> ",
-        f"> Subs : {subs_line}",
-        SEP,
-    ] + extra_lines + MATCH_REMINDER_LINES
-    return "\n".join(all_lines)
+    host_roster_block = _class_roster_block(host_map, SIXS_CLASSES, SIXS_CLASS_EMOJI)
+    mix_roster_block  = _class_roster_block(mix_starters, SIXS_CLASSES, SIXS_CLASS_EMOJI)
+
+    subs_entries = []
+    for p in sub_by_player.values():
+        p["classes"].sort(key=lambda c: SIXS_CLASSES.index(c) if c in SIXS_CLASSES else 99)
+        class_emojis = ", ".join(SIXS_CLASS_EMOJI[c] for c in p["classes"])
+        subs_entries.append(f"<@{p['user_id']}> - {class_emojis}")
+    subs = "\n> ".join(subs_entries) if subs_entries else "\u2014"
+
+    captain_line = f"> **CAPTAIN**: <@{match['captain_id']}>\n" if match["captain_id"] else ""
+
+    vc_ids = _parse_vc_ids(match)
+    vc_line = f"> **VC**: <#{vc_ids['vc']}>\n" if vc_ids.get("vc") else ""
+
+    rules_channel = f"<#{config.RULES_CHANNEL_ID}>" if config.RULES_CHANNEL_ID else "the rules channel"
+
+    return MIX_TEMPLATE.format(
+        header_icon=PINGU_HAPPY_ICON, team_name=team_name, date_time=ts_line,
+        division=division, pug_ping=pug_ping, map_name=map_name, server=server,
+        hoster=hoster, captain_line=captain_line, vc_line=vc_line,
+        host_roster_block=host_roster_block, mix_roster_block=mix_roster_block,
+        subs=subs, ping_icon=PING_ICON, rules_channel=rules_channel,
+    )
 
 
 def build_6s_opug_teams_message(match, red_team, blu_team, subs):

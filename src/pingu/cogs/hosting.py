@@ -990,6 +990,7 @@ class SixsMatchTypeSelect(ui.View):
 
 class SixsFreshPugModal(ui.Modal, title="Schedule a 6s Fresh PUG"):
     map_input = ui.TextInput(label="Maps (leave blank for TBC)", placeholder="e.g. cp_process_final", style=discord.TextStyle.short, required=False, max_length=120)
+    server_input = ui.TextInput(label="Server & Location", placeholder="e.g. Matcha Singapore  or  Serveme Europe", default="Matcha Singapore", style=discord.TextStyle.short, required=True, max_length=80)
 
     def __init__(self, bot):
         super().__init__()
@@ -1003,11 +1004,12 @@ class SixsFreshPugModal(ui.Modal, title="Schedule a 6s Fresh PUG"):
         # internally, but never parsed from input or shown to anyone.
         unix = int(time.time())
         map_name    = self.map_input.value.strip() or "tbc"
+        server      = self.server_input.value.strip()
         pug_role_id = config.PUG_ROLE_ID
 
         match_id = await matches_db.create_match(type_="6s_fresh_pug", timestamp=unix, created_by=interaction.user.id,
             created_by_name=interaction.user.display_name, team_name=None, notes=None,
-            division=None, map_name=map_name, server=None, pug_role_id=pug_role_id)
+            division=None, map_name=map_name, server=server, pug_role_id=pug_role_id)
 
         result = await channel_service.create_match_channels(
             interaction.guild, match_id, "6s_fresh_pug", creator_id=interaction.user.id
@@ -1252,6 +1254,13 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
         required=False,
         max_length=120,
     )
+    server_input = ui.TextInput(
+        label="Server & Location",
+        placeholder="e.g. Matcha Singapore  or  Serveme Europe",
+        default="Matcha Singapore",
+        style=discord.TextStyle.short,
+        required=True, max_length=80,
+    )
 
     def __init__(self, bot):
         super().__init__()
@@ -1267,6 +1276,7 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
         unix = int(time.time())
 
         map_name    = self.map_input.value.strip() or "tbc"
+        server      = self.server_input.value.strip()
         pug_role_id = config.PUG_ROLE_ID
 
         existing_fp = await matches_db.get_active_fresh_pug()
@@ -1284,7 +1294,7 @@ class FreshPugModal(ui.Modal, title="Schedule a Fresh PUG"):
             created_by_name=interaction.user.display_name,
             team_name=None, notes=None,
             division=None, map_name=map_name,
-            server=None, pug_role_id=pug_role_id,
+            server=server, pug_role_id=pug_role_id,
         )
 
         result = await channel_service.create_match_channels(

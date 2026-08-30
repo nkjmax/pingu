@@ -39,7 +39,7 @@ class FreshPugSignupButton(ui.Button):
     def __init__(self, match_id):
         super().__init__(
             label="Sign Up",
-            emoji=discord.PartialEmoji.from_str("<:PUG:1367589835874893885>"),
+            emoji="\U0001f427",  # 🐧 -- matches the "click 🐧 to join" instruction in the message template
             custom_id=f"fp_signup:{match_id}",
             style=discord.ButtonStyle.primary,
             row=0,

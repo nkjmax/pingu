@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS matches (
     signup_list_msg_id  INTEGER,
     roster_edit_msg_id  INTEGER,
     team_split          TEXT,
+    voice_channel_ids   TEXT,  -- JSON: {"vc": id} for mix, {"red": id, "blu": id} for opug,
+                                -- {"waiting_room": id, "fresh_lobby": id, "fresh_red": id, "fresh_blu": id} for fresh pug
     -- new, additive: mix-request / archival features
     captain_id          INTEGER,
     captain_role_id     INTEGER,   -- dynamic "{team} Captain" role, deleted on teardown
@@ -278,6 +280,29 @@ async def get_team_split(match_id):
             row = await cur.fetchone()
             if row and row["team_split"]:
                 return json.loads(row["team_split"])
+    return None
+
+
+async def set_voice_channel_ids(match_id, vc_ids: dict):
+    """
+    vc_ids keys vary by match type -- "vc" for mix, "red"/"blu" for opug,
+    "waiting_room"/"fresh_lobby"/"fresh_red"/"fresh_blu" for fresh pug.
+    Same JSON-blob-on-the-row pattern as team_split above, since the VC
+    count genuinely varies by type rather than fitting one fixed shape.
+    """
+    async with connect() as db:
+        data = json.dumps(vc_ids)
+        await db.execute("UPDATE matches SET voice_channel_ids=? WHERE id=?", (data, match_id))
+        await db.commit()
+
+
+async def get_voice_channel_ids(match_id):
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT voice_channel_ids FROM matches WHERE id=?", (match_id,)) as cur:
+            row = await cur.fetchone()
+            if row and row["voice_channel_ids"]:
+                return json.loads(row["voice_channel_ids"])
     return None
 
 

@@ -30,6 +30,7 @@ _NEW_MATCHES_COLUMNS = [
     ("team_split", "TEXT"),
     ("ongoing_delete_at", "INTEGER"),
     ("channel_slot", "INTEGER"),
+    ("voice_channel_ids", "TEXT"),
 ]
 
 # host_requests is a new table (not retrofitted from the original bot), but
