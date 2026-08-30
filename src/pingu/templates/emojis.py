@@ -32,3 +32,9 @@ PINGUU_ICON      = "<:pinguu:1538932246675722240>"       # fresh pug header
 PINGU_HAPPY_ICON = "<:pingu_happy:1535331544091070504>"  # mix/opug header
 PING_ICON        = "<:ping:1541356316658892860>"         # section markers
 FRESH_PUG_JOIN_EMOJI = "\U0001f427"                       # 🐧 -- fresh pug sign-up button + "click to join" text
+
+# Prepended to every match channel/VC's Discord name (text and voice
+# alike, mix/opug/fresh pug alike) -- applied AFTER _slug() sanitizes the
+# rest of the name, never fed through it, since _slug()'s regex would
+# strip both the emoji and the separator right back out.
+MATCH_CHANNEL_PREFIX = "\U0001f427\u30fb"  # "🐧・"
