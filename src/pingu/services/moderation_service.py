@@ -55,18 +55,53 @@ async def expire_penalties(guild: discord.Guild, role_ids: dict = None):
     own separate role existed, a single shared role_id would have tried
     to remove the wrong role from some expiring penalties while never
     removing the right one from others.
+
+    Only deactivates a penalty once removal has genuinely succeeded or
+    genuinely wasn't needed (member already left the guild, or already
+    didn't have the role) -- never on a failure that might resolve
+    itself next sweep. Deactivating unconditionally used to mean ANY
+    transient failure (a missing role_id in config, a member cache miss,
+    a rate-limited Discord API call) permanently marked the penalty
+    "handled" in the DB with the Discord role never actually removed --
+    and since get_expired_active_penalties() only ever looks at active=1
+    rows, that penalty could never be retried again, silently, forever.
     """
     if role_ids is None:
         role_ids = {}
     expired = await penalties_db.get_expired_active_penalties()
     for penalty in expired:
         role_id = role_ids.get(penalty["type"])
-        if role_id:
-            member = guild.get_member(penalty["user_id"])
-            role = guild.get_role(role_id)
-            if member and role and role in member.roles:
-                try:
-                    await member.remove_roles(role, reason="Penalty expired")
-                except discord.HTTPException:
-                    pass
-        await penalties_db.deactivate(penalty["id"])
+        if not role_id:
+            log.warning(
+                f"expire_penalties: no role_id configured for type '{penalty['type']}' "
+                f"(penalty #{penalty['id']}) -- leaving active to retry once .env is fixed"
+            )
+            continue
+
+        member = guild.get_member(penalty["user_id"])
+        if not member:
+            # They've left the guild -- nothing to remove, safe to deactivate.
+            await penalties_db.deactivate(penalty["id"])
+            continue
+
+        role = guild.get_role(role_id)
+        if not role:
+            log.warning(
+                f"expire_penalties: role {role_id} not found in guild for type "
+                f"'{penalty['type']}' (penalty #{penalty['id']}) -- leaving active to retry"
+            )
+            continue
+
+        if role not in member.roles:
+            # Already doesn't have it (manually removed, etc.) -- done.
+            await penalties_db.deactivate(penalty["id"])
+            continue
+
+        try:
+            await member.remove_roles(role, reason="Penalty expired")
+            await penalties_db.deactivate(penalty["id"])
+        except discord.HTTPException as e:
+            log.warning(
+                f"expire_penalties: remove_roles failed for penalty #{penalty['id']}: {e} "
+                f"-- leaving active to retry next sweep"
+            )
