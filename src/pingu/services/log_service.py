@@ -56,17 +56,29 @@ async def find_and_attach_logs(match, session: aiohttp.ClientSession = None) -> 
             ids = await _query_logs_by_player(session, steamid)
             candidate_log_ids.update(ids)
 
+        log.info(f"log_service: {len(candidate_log_ids)} candidate logs found for match #{match['id']}")
+
         saved = []
+        checked = 0
         for log_id in candidate_log_ids:
             details = await _fetch_log(session, log_id)
             if not details:
                 continue
+            checked += 1
             if not (window_start <= details["date"] <= window_end):
+                log.info(
+                    f"log_service: log {log_id} outside match window for #{match['id']} "
+                    f"(log date={details['date']}, window={window_start}-{window_end})"
+                )
                 continue
 
             overlap = _roster_overlap(details["players"], set(steamids.values()))
             confidence = overlap / roster_size if roster_size else 0
             if confidence < OVERLAP_THRESHOLD:
+                log.info(
+                    f"log_service: log {log_id} overlap {confidence:.2f} "
+                    f"(threshold {OVERLAP_THRESHOLD}) below bar for match #{match['id']}"
+                )
                 continue
 
             row_id = await match_logs_db.add_log(
@@ -82,6 +94,12 @@ async def find_and_attach_logs(match, session: aiohttp.ClientSession = None) -> 
                 added_by="auto",
             )
             saved.append({"id": row_id, "logs_tf_url": f"https://logs.tf/{log_id}", **details})
+
+        if not saved:
+            log.info(
+                f"log_service: {len(candidate_log_ids)} candidate logs found, "
+                f"{checked} fetched successfully, 0 qualified for match #{match['id']}"
+            )
 
         return saved
     except Exception as e:
@@ -140,4 +158,9 @@ async def _fetch_log(session, log_id) -> dict | None:
 
 
 def _roster_overlap(log_players: set, roster_steamids: set) -> int:
-    return len(log_players & roster_steamids)
+    # log_players' keys always come from JSON (always strings). roster_steamids
+    # may be ints if that DB column is stored as INTEGER -- normalizing both
+    # to strings here means the intersection works regardless of which type
+    # the DB actually uses, rather than silently returning zero overlap on
+    # a type mismatch even when the actual players match perfectly.
+    return len({str(p) for p in log_players} & {str(s) for s in roster_steamids})
