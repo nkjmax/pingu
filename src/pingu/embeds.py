@@ -20,7 +20,7 @@ TF2_CLASSES = [
 ]
 
 DIVISIONS = [
-    "Iron",
+    "Newcomer",
     "Low Steel", "Steel", "High Steel",
     "Low Silver", "Silver", "High Silver",
     "Low Plat", "Plat",
@@ -37,22 +37,30 @@ SIXS_OPUG_HEADER = {
     "Div 3":    "DIV 3 PUG",
     "Div 2":    "DIV 2 PUG",
     "Div 1":    "DIV 1 PUG",
+    "Open For All": "OPEN FOR ALL PUG",
 }
 
-OPUG_DIVISIONS = ["Iron/Steel", "Steel", "Silver", "Plat"]
+OPUG_DIVISIONS = ["Newcomer/Steel", "Steel", "Silver", "Plat", "Open For All"]
+
+# 6s oPUG has its own division list, deliberately separate from
+# SIXS_DIVISIONS -- that list is shared with 6s mix's division select,
+# and "Open For All" is an oPUG-only concept. Appending it there would
+# have made it selectable for 6s mix too, which doesn't make sense.
+SIXS_OPUG_DIVISIONS = ["Newcomer", "Div 3", "Div 2", "Div 1", "Open For All"]
 
 OPUG_CHANNEL_KEY = {
-    "Iron/Steel": "iron_steel",
+    "Newcomer/Steel": "newcomer_steel",
     "Steel":      "steel",
     "Silver":     "silver",
     "Plat":       "plat",
 }
 
 OPUG_HEADER = {
-    "Iron/Steel": "IRON/STEEL PUG",
+    "Newcomer/Steel": "NEWCOMER/STEEL PUG",
     "Steel":      "STEEL PUG",
     "Silver":     "SILVER PUG",
     "Plat":       "PLATINUM PUG",
+    "Open For All": "OPEN FOR ALL PUG",
 }
 
 
@@ -405,19 +413,20 @@ def build_opug_message(match, signups, pug_role_id=None):
     # dropped either -- preserved as a trailing block rather than
     # silently removed.
     trailer_lines = []
-    if division in ("Iron/Steel", "Steel"):
+    if division in ("Newcomer/Steel", "Steel"):
         trailer_lines.append(f"> **PRIORITISING {division.upper()} ROLES, PLAT/SILVER OFFCLASSERS WILL BE HELD**")
-    trailer_lines.append("> Captain will balance the team.")
-    trailer_lines.append("> Tag hoster in signup thread and write your preferred classes!")
-    trailer_lines.append("> Thank you and enjoy the game ! \u270c\ufe0f")
+    trailer_lines.append("> The captain and hosters will balance the roster.")
+    trailer_lines.append("> Sign up by clicking on the class icon you wish to play.")
+    trailer_lines.append("> Enjoy the game!")
 
     return text + "\n" + "\n".join(trailer_lines)
 
 
 def build_opug_teams_message(match, red_team, blu_team, subs):
     """Posted to the OPUG channel after teams are split."""
-    red_ch  = "<#1282804942599356417>"
-    blu_ch  = "<#1282805074858344489>"
+    vc_ids = _parse_vc_ids(match)
+    red_ch = f"<#{vc_ids['red']}>" if vc_ids.get("red") else "the RED VC"
+    blu_ch = f"<#{vc_ids['blu']}>" if vc_ids.get("blu") else "the BLU VC"
 
     def team_lines(team):
         lines = []
@@ -524,9 +533,9 @@ def build_6s_opug_message(match, signups, pug_role_id=None):
     # dropped either -- preserved as a trailing block, same reasoning as
     # build_opug_message.
     trailer_lines = [
-        "> Captain will balance the team.",
-        "> Tag hoster in signup **thread** and write your preferred classes! **Ensure you specify roamer or pocket**",
-        "> Thank you and enjoy the game ! \u270c\ufe0f",
+        "> The captain and hosters will balance the roster.",
+        "> Sign up by clicking on the class icon you wish to play.",
+        "> Enjoy the game!",
     ]
     return text + "\n" + "\n".join(trailer_lines)
 
@@ -591,8 +600,9 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
 
 
 def build_6s_opug_teams_message(match, red_team, blu_team, subs):
-    red_ch = "<#1282804942599356417>"
-    blu_ch = "<#1282805074858344489>"
+    vc_ids = _parse_vc_ids(match)
+    red_ch = f"<#{vc_ids['red']}>" if vc_ids.get("red") else "the RED VC"
+    blu_ch = f"<#{vc_ids['blu']}>" if vc_ids.get("blu") else "the BLU VC"
 
     def team_lines(team):
         lines = []

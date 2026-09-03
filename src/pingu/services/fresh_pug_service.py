@@ -15,6 +15,7 @@ import time
 
 import pingu.db.matches as matches_db
 from pingu.services import channel_service
+from pingu import config
 
 
 class FreshPugAlreadyActive(Exception):
@@ -38,6 +39,7 @@ async def create(bot, guild, creator_id, creator_name, maps: str, server: str,
         division=None,
         map_name=maps or "tbc",
         server=server,
+        pug_role_id=config.PUG_ROLE_ID,
     )
     if match_id is None:
         # Lost the race against the DB's own singleton constraint.
@@ -57,10 +59,10 @@ async def create(bot, guild, creator_id, creator_name, maps: str, server: str,
 
     match = await matches_db.get_match(match_id)
     if match_type == "6s_fresh_pug":
-        content = build_6s_fresh_pug_message(match)
+        content = build_6s_fresh_pug_message(match, pug_role_id=config.PUG_ROLE_ID)
         thread_label = "FRESH PUG 6v6"
     else:
-        content = build_fresh_pug_message(match)
+        content = build_fresh_pug_message(match, pug_role_id=config.PUG_ROLE_ID)
         thread_label = "FRESH PUG"
 
     view = FreshPugSignupView(match_id)

@@ -134,13 +134,13 @@ async def _post_accepted_mix(interaction: discord.Interaction, match_id: int):
     return requester, None
 
 
-async def _delete_request_thread(interaction: discord.Interaction):
+async def _delete_request_thread(client, thread_id: int, parent_channel_id: int):
     """
-    Shared by both accept() and deny() -- a resolved mix request's thread
-    has served its purpose either way, whether the outcome was approval
-    or denial. Previously only accept() had this cleanup, which is why
-    denied requests' threads were silently piling up forever -- deny()
-    just posted a message and stopped, never touching the thread at all.
+    Shared by accept(), deny(), and the automated deadline-expiry path --
+    a resolved (or expired) mix request's thread has served its purpose
+    either way. Takes raw IDs rather than an interaction so it can be
+    called from a background task with no live interaction to read from,
+    not just from a button callback.
 
     Discord auto-posts a "X started a thread: Y" system message in the
     PARENT channel when a thread is created -- deleting the thread itself
@@ -149,16 +149,20 @@ async def _delete_request_thread(interaction: discord.Interaction):
     the thread's own ID, so this is usually a direct hit; the
     history-scan fallback covers cases where that assumption doesn't hold.
     """
-    if not isinstance(interaction.channel, discord.Thread):
-        return
+    thread = client.get_channel(thread_id)
+    if not thread:
+        try:
+            thread = await client.fetch_channel(thread_id)
+        except discord.HTTPException:
+            thread = None
 
-    parent = interaction.channel.parent
-    thread_id = interaction.channel.id
-    try:
-        await interaction.channel.delete()
-    except discord.HTTPException:
-        pass
+    if thread:
+        try:
+            await thread.delete()
+        except discord.HTTPException:
+            pass
 
+    parent = client.get_channel(parent_channel_id)
     if parent:
         try:
             sys_msg = await parent.fetch_message(thread_id)
@@ -210,7 +214,8 @@ class MixRequestReviewView(ui.View):
 
         # The mix now lives in its own channel/thread -- the request
         # thread has served its purpose.
-        await _delete_request_thread(interaction)
+        if isinstance(interaction.channel, discord.Thread):
+            await _delete_request_thread(interaction.client, interaction.channel.id, interaction.channel.parent_id)
 
         self.stop()
 
@@ -229,7 +234,8 @@ class MixRequestReviewView(ui.View):
 
         # Same cleanup as accept() -- a denied request's thread has also
         # served its purpose, and previously nothing here ever deleted it.
-        await _delete_request_thread(interaction)
+        if isinstance(interaction.channel, discord.Thread):
+            await _delete_request_thread(interaction.client, interaction.channel.id, interaction.channel.parent_id)
 
         self.stop()
 
@@ -297,7 +303,7 @@ class MixRequestEditModal(ui.Modal, title="Edit Mix Request"):
         required=True, max_length=40,
     )
     datetime_input = ui.TextInput(
-        label="Date & Time (GMT+8, DD/MM/YY)",
+        label="Date & Time (GMT+8, D/M/YY h:mm AM/PM)",
         placeholder="e.g.  25/3/25 8:00 PM  or  5/3/25 9PM",
         style=discord.TextStyle.short,
         required=True,
@@ -328,8 +334,15 @@ class MixRequestEditModal(ui.Modal, title="Edit Mix Request"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        from pingu.cogs.hosting import parse_datetime, DATETIME_HINT
+        from pingu.cogs.hosting import parse_datetime, DATETIME_HINT, is_safe_team_name
         import time
+
+        team_name = self.team_name_input.value.strip()
+        if not is_safe_team_name(team_name):
+            await interaction.followup.send(
+                "❌ Team name can only contain letters, numbers, and spaces.", ephemeral=True
+            )
+            return
 
         unix = parse_datetime(self.datetime_input.value.strip())
         if unix is None:
@@ -339,7 +352,6 @@ class MixRequestEditModal(ui.Modal, title="Edit Mix Request"):
             await interaction.followup.send("❌ That date/time is in the past.", ephemeral=True)
             return
 
-        team_name = self.team_name_input.value.strip()
         map_name = self.map_input.value.strip() or "tbc"
         server = self.server_input.value.strip()
 

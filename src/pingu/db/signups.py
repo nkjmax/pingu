@@ -474,3 +474,73 @@ async def finalise_all_accepted(match_id):
             (match_id,),
         )
         await db.commit()
+
+# --- new, additive: Open For All oPUG direct-accept (no hoster approval) ---
+
+async def try_direct_accept(match_id, user_id, username, class_name, cap=2):
+    """
+    Atomic "count current accepted for this class, insert as accepted
+    only if under cap" -- used by Open For All oPUG, where there's no
+    hoster-approval step to naturally serialize signups against.
+
+    Explicit BEGIN IMMEDIATE (not just wrapping in a transaction) is what
+    actually closes the race: SQLite's default deferred-transaction mode
+    only takes a write lock at the first WRITE statement, so a plain
+    "count, then insert" inside one connection block would still let two
+    simultaneous callers both read the same stale count before either
+    writes. BEGIN IMMEDIATE forces the lock up front, so a second caller
+    is forced to wait for the first's entire transaction (count AND
+    insert) to fully commit or roll back before its own count can even
+    run -- it can never see a stale number, regardless of how close
+    together two clicks land or how slow any single Discord round-trip is.
+
+    Returns one of:
+      ("accepted", signup_id)      -- slot was open, created directly as accepted
+      ("full", None)               -- cap reached, caller should offer a sub slot
+      ("already_signed_up", None)  -- an active row already exists for this user+class
+    """
+    import asyncio
+    for attempt in range(3):
+        try:
+            async with connect() as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN IMMEDIATE")
+                try:
+                    async with db.execute(
+                        "SELECT id, status FROM signups WHERE match_id=? AND user_id=? AND class_name=?",
+                        (match_id, user_id, class_name)
+                    ) as cur:
+                        existing = await cur.fetchone()
+                    if existing:
+                        if existing["status"] in ("pending", "accepted"):
+                            await db.execute("ROLLBACK")
+                            return ("already_signed_up", None)
+                        if existing["status"] == "cancelled":
+                            await db.execute("DELETE FROM signups WHERE id=?", (existing["id"],))
+
+                    async with db.execute(
+                        "SELECT COUNT(*) FROM signups WHERE match_id=? AND class_name=? AND status='accepted'",
+                        (match_id, class_name)
+                    ) as cur:
+                        row = await cur.fetchone()
+                        count = row[0] if row else 0
+
+                    if count >= cap:
+                        await db.execute("ROLLBACK")
+                        return ("full", None)
+
+                    cur = await db.execute(
+                        "INSERT INTO signups (match_id, user_id, username, class_name, status, accepted_at) "
+                        "VALUES (?, ?, ?, ?, 'accepted', ?)",
+                        (match_id, user_id, username, class_name, int(time.time()))
+                    )
+                    await db.execute("COMMIT")
+                    return ("accepted", cur.lastrowid)
+                except Exception:
+                    await db.execute("ROLLBACK")
+                    raise
+        except aiosqlite.OperationalError as e:
+            if "locked" in str(e).lower() and attempt < 2:
+                await asyncio.sleep(0.05 * (attempt + 1))
+                continue
+            raise

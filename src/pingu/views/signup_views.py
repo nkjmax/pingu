@@ -346,3 +346,155 @@ class SixsSignupView(ui.View):
         for cls in SIXS_CLASSES:
             self.add_item(SixsClassButton(cls, match_id))
         self.add_item(SignOutButton(match_id))
+
+# --- Open For All oPUG: direct-accept, no hoster approval step ---
+
+async def _do_open_for_all_signup(interaction, match_id, class_name):
+    result, signup_id = await signups_db.try_direct_accept(
+        match_id, interaction.user.id, interaction.user.display_name, class_name, cap=2
+    )
+    if result == "accepted":
+        interaction.client.ui_updater.schedule_refresh(match_id)
+        await interaction.followup.send(f"\u2705 You're in as **{class_name}**!", ephemeral=True)
+        return
+    if result == "already_signed_up":
+        await interaction.followup.send(
+            f"You're already signed up for **{class_name}**.", ephemeral=True
+        )
+        return
+    # "full" -- offer a sub slot instead
+    view = OpenForAllSubConfirmView(match_id, class_name)
+    await interaction.followup.send(
+        f"**{class_name}** is full (2/2). Want to join as a sub instead?",
+        view=view, ephemeral=True,
+    )
+
+
+class OpenForAllSubConfirmView(ui.View):
+    def __init__(self, match_id, class_name):
+        super().__init__(timeout=60)
+        self.match_id   = match_id
+        self.class_name = class_name
+
+    @ui.button(label="Yes, sub", style=discord.ButtonStyle.primary)
+    async def confirm(self, interaction, button):
+        await interaction.response.defer(ephemeral=True)
+        # cap=4 -- 2 main + up to 2 subs, same atomic primitive, just a
+        # higher cap. Race-safe the same way the main-slot check is.
+        result, signup_id = await signups_db.try_direct_accept(
+            self.match_id, interaction.user.id, interaction.user.display_name,
+            self.class_name, cap=4,
+        )
+        if result == "accepted":
+            interaction.client.ui_updater.schedule_refresh(self.match_id)
+            await interaction.followup.send(
+                f"\u2705 You're in as a sub for **{self.class_name}**!", ephemeral=True
+            )
+        elif result == "already_signed_up":
+            await interaction.followup.send(
+                f"You're already signed up for **{self.class_name}**.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"Sorry, **{self.class_name}** subs are full too (2/2).", ephemeral=True
+            )
+
+    @ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(
+            content="No worries \u2014 pick another class if you'd like.", view=None
+        )
+
+
+class OpenForAllClashConfirmView(ui.View):
+    def __init__(self, match_id, class_name, clash_names):
+        super().__init__(timeout=60)
+        self.match_id    = match_id
+        self.class_name  = class_name
+        self.clash_names = clash_names
+
+    @ui.button(label="Yes, sign up anyway", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        await interaction.response.defer(ephemeral=True)
+        await _do_open_for_all_signup(interaction, self.match_id, self.class_name)
+
+    @ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(content="Sign-up cancelled.", view=None)
+
+
+class OpenForAllClassButton(ui.Button):
+    """Parametrized on class_list/emoji_map rather than duplicated per
+    HL/6s -- Open For All applies to both, and the callback logic is
+    otherwise identical between them."""
+
+    def __init__(self, class_name, match_id, class_list, emoji_map, row_size):
+        super().__init__(
+            label=class_name,
+            emoji=emoji_map[class_name],
+            custom_id=f"ofa_signup:{match_id}:{class_name}",
+            style=discord.ButtonStyle.secondary,
+            row=class_list.index(class_name) // row_size,
+        )
+        self.class_name = class_name
+        self.match_id   = match_id
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        match = await matches_db.get_match(self.match_id)
+
+        if not match or match["ended"]:
+            await interaction.followup.send(
+                "This PUG has already ended or been cancelled.", ephemeral=True
+            )
+            return
+
+        if _is_mix_banned(interaction):
+            await interaction.followup.send(
+                "\u274c You currently have a Mix Ban and can't sign up for matches.", ephemeral=True
+            )
+            return
+
+        # Same "already on the main roster for another class" check as
+        # the normal OPugClassButton/SixsClassButton -- Open For All
+        # only skips the hoster-approval step, not this.
+        all_signups = await signups_db.get_non_denied_signups_for_user(self.match_id, interaction.user.id)
+        for s in all_signups:
+            if s["status"] == "accepted":
+                accepted_for = await signups_db.get_accepted_signups_for_class(self.match_id, s["class_name"])
+                main_uids = [a["user_id"] for a in accepted_for[:2]]
+                if interaction.user.id in main_uids:
+                    await interaction.followup.send(
+                        f"You're already on the main roster as **{s['class_name']}**. "
+                        "Sign out first if you want to change classes.",
+                        ephemeral=True,
+                    )
+                    return
+
+        clashing = await signups_db.get_accepted_matches_for_user(
+            interaction.user.id, exclude_match_id=self.match_id, reference_timestamp=match["timestamp"]
+        )
+        if clashing:
+            clash_names = ", ".join(
+                f"{m['team_name'] or 'a mix'} (<#{m['channel_id']}>)" for m in clashing
+            )
+            view = OpenForAllClashConfirmView(self.match_id, self.class_name, clash_names)
+            warn = (
+                "\u26a0\ufe0f **Warning:** You are already accepted in " + clash_names +
+                ". Are you sure you want to sign up for this PUG too?"
+            )
+            await interaction.followup.send(warn, view=view, ephemeral=True)
+            return
+
+        await _do_open_for_all_signup(interaction, self.match_id, self.class_name)
+
+
+class OpenForAllSignupView(ui.View):
+    def __init__(self, match_id, is_sixs=False):
+        super().__init__(timeout=None)
+        class_list = SIXS_CLASSES if is_sixs else TF2_CLASSES
+        emoji_map  = SIXS_CLASS_EMOJI if is_sixs else CLASS_EMOJI
+        row_size   = 4 if is_sixs else 5
+        for cls in class_list:
+            self.add_item(OpenForAllClassButton(cls, match_id, class_list, emoji_map, row_size))
+        self.add_item(SignOutButton(match_id))
