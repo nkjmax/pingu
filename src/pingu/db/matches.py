@@ -126,6 +126,22 @@ async def set_message_id(match_id, message_id, channel_id):
         await db.commit()
 
 
+async def set_channel_id_only(match_id, channel_id):
+    """
+    channel_id normally only gets written alongside message_id via
+    set_message_id -- but that means it stays NULL for the entire window
+    between channel creation and a roster actually landing. If the
+    roster deadline expires with nothing posted, teardown_match_channels
+    reads match["channel_id"] to know what to delete, and finds nothing
+    -- the channel silently never gets torn down. This is called right
+    at creation, before any roster is expected, specifically to close
+    that gap.
+    """
+    async with connect() as db:
+        await db.execute("UPDATE matches SET channel_id=? WHERE id=?", (channel_id, match_id))
+        await db.commit()
+
+
 async def set_thread_id(match_id, thread_id):
     async with connect() as db:
         await db.execute("UPDATE matches SET thread_id=? WHERE id=?", (thread_id, match_id))

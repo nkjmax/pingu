@@ -44,15 +44,14 @@ from pingu.templates.emojis import MATCH_CHANNEL_PREFIX
 
 
 def category_id_for_type(match_type: str):
-    if match_type in ("6s_mix", "6s_opug", "6s_fresh_pug"):
-        return config.SIXS_MATCH_CATEGORY_ID
+    # One shared category for all match types now -- HL and 6s no longer
+    # split. match_type kept as a parameter for call-site compatibility
+    # and in case this needs to branch again later.
     return config.MATCH_CATEGORY_ID
 
 
 def vc_category_id_for_type(match_type: str):
-    if match_type in ("6s_mix", "6s_opug", "6s_fresh_pug"):
-        return config.SIXS_VC_CATEGORY_ID
-    return config.HL_VC_CATEGORY_ID
+    return config.VC_CATEGORY_ID
 
 
 def _slug(text: str) -> str:
@@ -74,7 +73,12 @@ def channel_label_for_match(match_type: str, slot: int, team_name: str = None, d
 
     slug = _slug(base + suffix)
 
-    if match_type not in ("fresh_pug", "6s_fresh_pug"):
+    # No suffix for the first (only) active one of its kind -- only
+    # append the slot number once a duplicate actually exists. The first
+    # one is never retroactively renamed when a duplicate later appears
+    # (deliberately -- more complexity than this is worth for a cosmetic
+    # nitpick), so slot 1 stays bare, slot 2 onward get numbered.
+    if match_type not in ("fresh_pug", "6s_fresh_pug") and slot > 1:
         slug = f"{slug}-{slot}"
 
     # Prefix applied AFTER slugifying/truncating logic, never fed through
@@ -142,15 +146,16 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
         overwrites = _mix_opug_overwrites(guild)
         text_channel = await category.create_text_channel(name=label, overwrites=overwrites)
         if vc_category:
-            vc = await vc_category.create_voice_channel(name=label)
+            vc = await vc_category.create_voice_channel(name=label, user_limit=99)
             vc_ids["vc"] = vc.id
     elif match_type in ("opug", "6s_opug"):
         overwrites = _mix_opug_overwrites(guild)
         text_channel = await category.create_text_channel(name=label, overwrites=overwrites)
         div_slug = _slug(division or "pug")
+        slot_suffix = f"-{slot}" if slot > 1 else ""
         if vc_category:
-            red_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-red-{slot}")
-            blu_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-blu-{slot}")
+            red_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-red{slot_suffix}", user_limit=99)
+            blu_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-blu{slot_suffix}", user_limit=99)
             vc_ids["red"] = red_vc.id
             vc_ids["blu"] = blu_vc.id
     else:
@@ -191,10 +196,10 @@ async def _create_fresh_pug_channels(guild: discord.Guild, category: discord.Cat
 
     vc_ids = {}
     if vc_category:
-        waiting_room = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}waiting-room")
-        fresh_lobby  = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-lobby")
-        fresh_red    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-red")
-        fresh_blu    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-blu")
+        waiting_room = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}waiting-room", user_limit=99)
+        fresh_lobby  = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-lobby", user_limit=99)
+        fresh_red    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-red", user_limit=99)
+        fresh_blu    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-blu", user_limit=99)
         vc_ids = {
             "waiting_room": waiting_room.id,
             "fresh_lobby": fresh_lobby.id,

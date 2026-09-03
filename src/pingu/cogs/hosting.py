@@ -11,6 +11,7 @@ to pingu.views.legacy -- the original views.py port, landing next.
 
 import re
 import time
+import asyncio
 import discord
 from discord import app_commands, ui
 from discord.ext import commands
@@ -25,7 +26,7 @@ from pingu.templates.roster_instructions import roster_instructions_block
 from pingu.embeds import (
     build_mix_message, build_match_embed, build_ongoing_line, build_fresh_pug_message, build_opug_message,
     build_6s_fresh_pug_message, build_6s_opug_message, build_6s_mix_message,
-    FP_DIVISIONS, OPUG_DIVISIONS, SIXS_DIVISIONS, SIXS_CLASSES, SIXS_CLASS_EMOJI,
+    FP_DIVISIONS, OPUG_DIVISIONS, SIXS_OPUG_DIVISIONS, SIXS_DIVISIONS, SIXS_CLASSES, SIXS_CLASS_EMOJI,
     build_archive_message, DIVISIONS, TF2_CLASSES, CLASS_EMOJI, build_pending_message, build_denied_message,
     build_fresh_pug_signup_list,
 )
@@ -43,6 +44,135 @@ DT_RE = re.compile(
 
 CONNECT_RE = re.compile(r"connect\s+([\d.]+:\d+);\s*password\s+\"([^\"]+)\"", re.IGNORECASE)
 SDR_RE     = re.compile(r"connect\s+(169\.254[\d.]+:\d+);\s*password\s+\"([^\"]+)\"", re.IGNORECASE)
+
+TEAM_NAME_RE = re.compile(r"^[A-Za-z0-9 ]+$")
+
+
+def is_safe_team_name(name: str) -> bool:
+    """Letters, digits, and spaces only. Team names flow unescaped into
+    match message text, so anything else -- @, <, >, #, backticks -- would
+    let someone type a real Discord mention or trigger markdown/formatting
+    through a plain text field. Applied uniformly everywhere a team name
+    gets collected: creation, request, and edit alike."""
+    return bool(TEAM_NAME_RE.match(name.strip()))
+
+
+ROSTER_DEADLINE_SECONDS = 300  # 5 minutes
+
+
+async def _fire_roster_deadline_teardown(bot, user_id, match_id, channel_id, delay=ROSTER_DEADLINE_SECONDS):
+    """
+    Mix/6s_mix only -- opug and fresh pug build their roster through
+    sign-up buttons, not a typed message, so they never enter a pending-
+    roster window at all.
+
+    Nothing previously watched for a roster window closing with nothing
+    ever typed -- the on_message handler in main.py just silently returns
+    once `expires` has passed, leaving the channel/VC/match row orphaned
+    forever. This is the actual watcher: fired once when the window
+    opens, checks back after it closes, and tears down cleanly if the
+    hoster never posted anything.
+
+    The notice posts to HOSTER_CHANNEL_ID, not the match channel itself
+    -- posting inside the channel right before deleting it would mean
+    the message vanishes along with everything else, for nobody to ever
+    actually read.
+
+    Guards against a hoster starting a second /host flow before the
+    first one's window closes -- _pending_roster is keyed by user_id, so
+    a second entry would overwrite the first. If that's happened, this
+    task's own match_id no longer matches what's in the dict, and it
+    exits without touching anything (the first match's channel is a
+    known, accepted edge case here -- see chat).
+    """
+    await asyncio.sleep(delay)
+
+    pending = bot._pending_roster.get(user_id)
+    if not pending or pending.get("match_id") != match_id:
+        return  # already consumed, or superseded by a newer pending entry
+
+    del bot._pending_roster[user_id]
+
+    match = await matches_db.get_match(match_id)
+    if not match or match["ended"]:
+        return  # already concluded/cancelled some other way
+
+    channel = bot.get_channel(channel_id)
+    guild = channel.guild if channel else bot.get_guild(config.GUILD_ID)
+
+    await matches_db.mark_ended(match_id, cancelled=True)
+    if guild:
+        await channel_service.teardown_match_channels(guild, match_id)
+
+    if config.HOSTER_CHANNEL_ID:
+        hoster_ch = bot.get_channel(config.HOSTER_CHANNEL_ID)
+        if hoster_ch:
+            try:
+                await hoster_ch.send(
+                    f"<@{user_id}> \u23f0 No roster was posted in time \u2014 this match is being "
+                    f"cancelled and the channel removed. Run `/host` again when you're ready."
+                )
+            except Exception:
+                pass
+
+
+async def _start_roster_collection(bot, interaction, channel, match_id, is_sixs):
+    """
+    Posts the visible, in-channel roster prompt -- an ephemeral message
+    can only ever appear wherever the original /host interaction started,
+    never inside a channel that didn't exist yet at that point, so a
+    real message pinging the hoster directly is the only way to actually
+    notify them inside the channel they'll be typing in. Also stores
+    channel_id immediately (rather than waiting for a roster to land, see
+    matches_db.set_channel_id_only) and starts the deadline watch.
+    """
+    await matches_db.set_channel_id_only(match_id, channel.id)
+
+    await channel.send(
+        f"{interaction.user.mention} **post your host team roster here within 5 minutes** "
+        f"or this channel will be automatically removed.\n\n"
+        f"{roster_instructions_block(is_sixs=is_sixs)}"
+    )
+
+    bot._pending_roster[interaction.user.id] = {
+        "match_id":           match_id,
+        "channel_id":         channel.id,
+        "bot":                bot,
+        "expires":            time.time() + ROSTER_DEADLINE_SECONDS,
+        "roster_interaction": interaction,
+    }
+
+    asyncio.create_task(
+        _fire_roster_deadline_teardown(bot, interaction.user.id, match_id, channel.id)
+    )
+
+
+async def _fire_mix_request_deadline_teardown(bot, request_id, thread_id, parent_channel_id, delay=ROSTER_DEADLINE_SECONDS):
+    """
+    /host-request's mix path -- a non-hoster requester who never posts a
+    roster in the thread within the window. hosting_service.py's own
+    docstring flags this exact case as "a known gap ... not handled yet"
+    -- this closes it, same shape as _fire_roster_deadline_teardown but
+    for a thread + host_requests row instead of a channel + matches row.
+
+    No ping to the requester on expiry (unlike the hoster path) -- agreed
+    in chat that it's not needed here.
+    """
+    await asyncio.sleep(delay)
+
+    from pingu.services import hosting_service
+    import pingu.db.host_requests as requests_db
+
+    request = await requests_db.get_request(request_id)
+    if not request or request["status"] != "pending" or request["roster"]:
+        return  # already resolved, or the roster landed in time
+
+    await hosting_service.expire_request(request_id)
+
+    from pingu.views.hosting_views import _delete_request_thread
+    await _delete_request_thread(bot, thread_id, parent_channel_id)
+
+
 TV_RE      = re.compile(r"connect\s+([\d.]+:270\d\d)(?:\s|$)", re.IGNORECASE)
 
 
@@ -323,7 +453,7 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
         required=True, max_length=40,
     )
     datetime_input = ui.TextInput(
-        label="Date & Time (GMT+8, DD/MM/YY)",
+        label="Date & Time (GMT+8, D/M/YY h:mm AM/PM)",
         placeholder="e.g.  25/3/25 8:00 PM  or  5/3/25 9PM",
         style=discord.TextStyle.short,
         required=True,
@@ -354,6 +484,12 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
 
         unix      = parse_datetime(self.datetime_input.value.strip())
         team_name = self.team_name_input.value.strip()
+
+        if not is_safe_team_name(team_name):
+            await interaction.followup.send(
+                "\u274c Team name can only contain letters, numbers, and spaces.", ephemeral=True
+            )
+            return
 
         if unix is None:
             await interaction.followup.send(
@@ -413,13 +549,7 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
             f"{roster_instructions_block(is_sixs=False)}",
             ephemeral=True,
         )
-        interaction.client._pending_roster[interaction.user.id] = {
-            "match_id":       match_id,
-            "channel_id":     channel.id,
-            "bot":            self.bot,
-            "expires":        time.time() + 300,
-            "roster_interaction": interaction,
-        }
+        await _start_roster_collection(self.bot, interaction, channel, match_id, is_sixs=False)
 
     async def _submit_as_request(self, interaction, unix, team_name, map_name, server):
         """Non-hoster path: creates a pending host_requests row and a
@@ -446,6 +576,11 @@ class MixModal(ui.Modal, title="Schedule a Mix"):
                     f"Server: {server or 'no preference'} | Date: <t:{unix}:F>\n\n"
                     f"{interaction.user.mention}, post your team's roster below.\n\n"
                     f"{roster_instructions_block(is_sixs=False)}"
+                )
+                asyncio.create_task(
+                    _fire_mix_request_deadline_teardown(
+                        interaction.client, request_id, thread.id, _config.MIX_REQUESTS_CHANNEL_ID
+                    )
                 )
 
         if self.origin_message:
@@ -476,7 +611,7 @@ class EditMixModal(ui.Modal, title="Edit Match Details"):
         required=False, max_length=40,
     )
     datetime_input = ui.TextInput(
-        label="Date & Time (DD/MM/YY) \u2014 blank to keep",
+        label="Date & Time (D/M/YY h:mm AM/PM), blank=keep",
         placeholder="e.g.  25/3/25 8:00 PM",
         style=discord.TextStyle.short,
         required=False,
@@ -502,7 +637,13 @@ class EditMixModal(ui.Modal, title="Edit Match Details"):
 
         updates = {}
         if self.team_name_input.value.strip():
-            updates["team_name"] = self.team_name_input.value.strip()
+            new_team_name = self.team_name_input.value.strip()
+            if not is_safe_team_name(new_team_name):
+                await interaction.followup.send(
+                    "\u274c Team name can only contain letters, numbers, and spaces.", ephemeral=True
+                )
+                return
+            updates["team_name"] = new_team_name
         if self.datetime_input.value.strip():
             unix = parse_datetime(self.datetime_input.value.strip())
             if unix is None:
@@ -859,7 +1000,7 @@ class OPugDivisionSelect(ui.View):
 
 class OPugModal(ui.Modal, title="Schedule an Organised PUG"):
     datetime_input = ui.TextInput(
-        label="Date & Time (GMT+8, DD/MM/YY)",
+        label="Date & Time (GMT+8, D/M/YY h:mm AM/PM)",
         placeholder="e.g.  25/3/25 8:00 PM  or  5/3/25 9PM",
         style=discord.TextStyle.short,
         required=True,
@@ -924,16 +1065,24 @@ class OPugModal(ui.Modal, title="Schedule an Organised PUG"):
         channel = self.bot.get_channel(channel_id)
 
         match = await matches_db.get_match(match_id)
-        from pingu.views.signup_views import OPugSignupView
         content = build_opug_message(match, [], pug_role_id=pug_role_id)
-        view    = OPugSignupView(match_id)
+        if self.division == "Open For All":
+            from pingu.views.signup_views import OpenForAllSignupView
+            view = OpenForAllSignupView(match_id, is_sixs=False)
+        else:
+            from pingu.views.signup_views import OPugSignupView
+            view = OPugSignupView(match_id)
         msg     = await channel.send(content=content, view=view)
         await matches_db.set_message_id(match_id, msg.id, channel.id)
 
-        pending_msg = await channel.send(content=build_pending_message(match, []))
-        denied_msg  = await channel.send(content=build_denied_message(match, []))
-        await matches_db.set_pending_msg_id(match_id, pending_msg.id)
-        await matches_db.set_denied_msg_id(match_id, denied_msg.id)
+        if self.division != "Open For All":
+            # Open For All has no pending/denied concept at all -- every
+            # signup goes straight to accepted via try_direct_accept, so
+            # these two messages would sit there permanently empty.
+            pending_msg = await channel.send(content=build_pending_message(match, []))
+            denied_msg  = await channel.send(content=build_denied_message(match, []))
+            await matches_db.set_pending_msg_id(match_id, pending_msg.id)
+            await matches_db.set_denied_msg_id(match_id, denied_msg.id)
 
         try:
             thread = await msg.create_thread(
@@ -1015,7 +1164,7 @@ class SixsFreshPugModal(ui.Modal, title="Schedule a 6s Fresh PUG"):
             interaction.guild, match_id, "6s_fresh_pug", creator_id=interaction.user.id
         )
         if not result:
-            await interaction.followup.send("\u274c Could not create PUG channel \u2014 check SIXS_MATCH_CATEGORY_ID in .env.", ephemeral=True)
+            await interaction.followup.send("\u274c Could not create PUG channel \u2014 check MATCH_CATEGORY_ID in .env.", ephemeral=True)
             return
         channel_id, _ = result
         channel = self.bot.get_channel(channel_id)
@@ -1044,7 +1193,7 @@ class SixsOPugDivisionSelect(ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
         self.bot = bot
-        options  = [discord.SelectOption(label=d, value=d) for d in SIXS_DIVISIONS]
+        options  = [discord.SelectOption(label=d, value=d) for d in SIXS_OPUG_DIVISIONS]
         select   = ui.Select(placeholder="Select division\u2026", options=options)
         select.callback = self._on_select
         self.add_item(select)
@@ -1055,7 +1204,7 @@ class SixsOPugDivisionSelect(ui.View):
 
 
 class SixsOPugModal(ui.Modal, title="Schedule a 6s Organised PUG"):
-    datetime_input = ui.TextInput(label="Date & Time (GMT+8, DD/MM/YY)", placeholder="e.g. 25/3/25 8:00 PM", style=discord.TextStyle.short, required=True)
+    datetime_input = ui.TextInput(label="Date & Time (GMT+8, D/M/YY h:mm AM/PM)", placeholder="e.g. 25/3/25 8:00 PM", style=discord.TextStyle.short, required=True)
     map_input      = ui.TextInput(label="Map (leave blank for TBC)", placeholder="e.g. cp_process_final", style=discord.TextStyle.short, required=False, max_length=80)
     server_input   = ui.TextInput(label="Server & Location", default="Matcha Singapore", style=discord.TextStyle.short, required=True, max_length=80)
 
@@ -1085,21 +1234,26 @@ class SixsOPugModal(ui.Modal, title="Schedule a 6s Organised PUG"):
             interaction.guild, match_id, "6s_opug", division=self.division
         )
         if not result:
-            await interaction.followup.send("\u274c Could not create PUG channel \u2014 check SIXS_MATCH_CATEGORY_ID in .env.", ephemeral=True)
+            await interaction.followup.send("\u274c Could not create PUG channel \u2014 check MATCH_CATEGORY_ID in .env.", ephemeral=True)
             return
         channel_id, _ = result
         channel = self.bot.get_channel(channel_id)
         match   = await matches_db.get_match(match_id)
-        from pingu.views.signup_views import SixsSignupView
         content = build_6s_opug_message(match, [], pug_role_id=pug_role_id)
-        view    = SixsSignupView(match_id)
+        if self.division == "Open For All":
+            from pingu.views.signup_views import OpenForAllSignupView
+            view = OpenForAllSignupView(match_id, is_sixs=True)
+        else:
+            from pingu.views.signup_views import SixsSignupView
+            view = SixsSignupView(match_id)
         msg     = await channel.send(content=content, view=view)
         await matches_db.set_message_id(match_id, msg.id, channel.id)
 
-        pending_msg = await channel.send(content=build_pending_message(match, []))
-        denied_msg  = await channel.send(content=build_denied_message(match, []))
-        await matches_db.set_pending_msg_id(match_id, pending_msg.id)
-        await matches_db.set_denied_msg_id(match_id, denied_msg.id)
+        if self.division != "Open For All":
+            pending_msg = await channel.send(content=build_pending_message(match, []))
+            denied_msg  = await channel.send(content=build_denied_message(match, []))
+            await matches_db.set_pending_msg_id(match_id, pending_msg.id)
+            await matches_db.set_denied_msg_id(match_id, denied_msg.id)
         try:
             thread = await msg.create_thread(name=f"{self.division} PUG \u2014 signup thread, {thread_date_str(unix)}", auto_archive_duration=1440)
             await matches_db.set_thread_id(match_id, thread.id)
@@ -1130,7 +1284,7 @@ class SixsDivisionSelect(ui.View):
 
 class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
     team_name_input = ui.TextInput(label="Host team name", placeholder="e.g. GAY BLACK MEN", style=discord.TextStyle.short, required=True, max_length=40)
-    datetime_input  = ui.TextInput(label="Date & Time (GMT+8, DD/MM/YY)", placeholder="e.g. 25/3/25 8:00 PM", style=discord.TextStyle.short, required=True)
+    datetime_input  = ui.TextInput(label="Date & Time (GMT+8, D/M/YY h:mm AM/PM)", placeholder="e.g. 25/3/25 8:00 PM", style=discord.TextStyle.short, required=True)
     map_input       = ui.TextInput(label="Map (leave blank for TBC)", placeholder="e.g. cp_process_final", style=discord.TextStyle.short, required=False, max_length=60)
     server_input    = ui.TextInput(label="Server & Location", default="Matcha Singapore", style=discord.TextStyle.short, required=True, max_length=80)
 
@@ -1145,6 +1299,11 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
         await interaction.response.defer(ephemeral=True)
         unix      = parse_datetime(self.datetime_input.value.strip())
         team_name = self.team_name_input.value.strip()
+        if not is_safe_team_name(team_name):
+            await interaction.followup.send(
+                "\u274c Team name can only contain letters, numbers, and spaces.", ephemeral=True
+            )
+            return
         if unix is None:
             await interaction.followup.send(f"\u274c Couldn't parse date/time.\n{DATETIME_HINT}", ephemeral=True)
             return
@@ -1174,7 +1333,7 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
             interaction.guild, match_id, "6s_mix", team_name=team_name, division=self.division
         )
         if not result:
-            await interaction.followup.send("\u274c Could not create match channel \u2014 check SIXS_MATCH_CATEGORY_ID in .env.", ephemeral=True)
+            await interaction.followup.send("\u274c Could not create match channel \u2014 check MATCH_CATEGORY_ID in .env.", ephemeral=True)
             return
         channel_id, _ = result
         channel = self.bot.get_channel(channel_id)
@@ -1190,13 +1349,7 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
             f"{roster_instructions_block(is_sixs=True)}",
             ephemeral=True,
         )
-        interaction.client._pending_roster[interaction.user.id] = {
-            "match_id":           match_id,
-            "channel_id":         channel.id,
-            "expires":            time.time() + 300,
-            "type":               "6s_mix",
-            "roster_interaction": interaction,
-        }
+        await _start_roster_collection(self.bot, interaction, channel, match_id, is_sixs=True)
 
     async def _submit_as_request(self, interaction, unix, team_name, map_name, server):
         """Non-hoster path -- same idea as MixModal's, just tagged for a
@@ -1223,6 +1376,11 @@ class SixsMixModal(ui.Modal, title="Schedule a 6s Mix"):
                     f"Server: {server or 'no preference'} | Date: <t:{unix}:F>\n\n"
                     f"{interaction.user.mention}, post your team's roster below.\n\n"
                     f"{roster_instructions_block(is_sixs=True)}"
+                )
+                asyncio.create_task(
+                    _fire_mix_request_deadline_teardown(
+                        interaction.client, request_id, thread.id, _config.MIX_REQUESTS_CHANNEL_ID
+                    )
                 )
 
         if self.origin_message:
@@ -1451,7 +1609,7 @@ def get_auto_ping_ids(match):
         return None
 
     ping_roles = config.PING_ROLES
-    iron_id   = ping_roles.get("Iron")
+    newcomer_id = ping_roles.get("Newcomer")
     steel_id  = ping_roles.get("Steel")
     silver_id = ping_roles.get("Silver")
     plat_id   = ping_roles.get("Plat")
@@ -1465,8 +1623,8 @@ def get_auto_ping_ids(match):
 
     division = (match["division"] or "").strip()
 
-    if division == "Iron/Steel":
-        return [r for r in [iron_id, steel_id] if r]
+    if division == "Newcomer/Steel":
+        return [r for r in [newcomer_id, steel_id] if r]
     elif division == "Steel":
         return [r for r in [steel_id] if r]
     elif division == "Silver":

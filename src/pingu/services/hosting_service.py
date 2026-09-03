@@ -73,3 +73,20 @@ async def deny_request(request_id: int, hoster_id: int):
             f"host_request #{request_id} is already {request['status'] if request else 'missing'}"
         )
     await requests_db.set_status(request_id, "denied", hoster_id=hoster_id)
+
+
+async def expire_request(request_id: int):
+    """
+    Automated timeout path -- the requester never posted a roster within
+    the window (see cogs/hosting.py's deadline watcher). Deliberately a
+    SEPARATE status from "denied": a denial is a human hoster's decision,
+    an expiry is nobody ever finishing the request at all -- worth being
+    able to tell the two apart later if anyone looks at request history.
+    Silently no-ops if the request has already moved past "pending" by
+    the time this fires (roster landed just in time, or someone actioned
+    it manually) -- not an error case, just means there's nothing to do.
+    """
+    request = await requests_db.get_request(request_id)
+    if not request or request["status"] != "pending":
+        return
+    await requests_db.set_status(request_id, "expired", hoster_id=None)

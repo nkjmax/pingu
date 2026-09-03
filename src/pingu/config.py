@@ -59,22 +59,20 @@ RE_SORT_INTERVAL_MINUTES = int(os.environ.get("RE_SORT_INTERVAL_MINUTES", "30"))
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # optional -- Pingu chatbot persona, silently disabled if unset
 
-# Categories dynamic match channels get created under, split by game mode.
-MATCH_CATEGORY_ID = _env_int("MATCH_CATEGORY_ID")        # HL: mix, opug, fresh_pug (text channels)
-SIXS_MATCH_CATEGORY_ID = _env_int("SIXS_MATCH_CATEGORY_ID")  # 6s: 6s_mix, 6s_opug, 6s_fresh_pug (text channels)
+# Categories dynamic match channels get created under -- one shared
+# category for all match types now (HL and 6s alike), not split by mode.
+MATCH_CATEGORY_ID = _env_int("MATCH_CATEGORY_ID")  # text channels: mix, opug, fresh_pug, 6s_*
 
-# Separate, permanent categories for VCs -- not created or torn down by
-# this bot, unlike the text categories above (which are also permanent,
-# but conceptually distinct: text channels and VCs no longer share a
-# category, see channel_service.py).
-HL_VC_CATEGORY_ID = _env_int("HL_VC_CATEGORY_ID")        # HL: mix, opug, fresh_pug (voice channels)
-SIXS_VC_CATEGORY_ID = _env_int("SIXS_VC_CATEGORY_ID")    # 6s: 6s_mix, 6s_opug, 6s_fresh_pug (voice channels)
+# Separate, permanent category for VCs -- not created or torn down by
+# this bot, unlike the text category above (which is also permanent, but
+# conceptually distinct: text channels and VCs don't share a category).
+VC_CATEGORY_ID = _env_int("VC_CATEGORY_ID")  # voice channels: mix, opug, fresh_pug, 6s_*
 
 # name -> role_id, used for /ping's auto-selection and manual dropdown.
 # Original config.json had this as one nested dict; five flat env vars here.
 PING_ROLES = {
     k: v for k, v in {
-        "Iron": _env_int("PING_ROLE_IRON"),
+        "Newcomer": _env_int("PING_ROLE_NEWCOMER"),
         "Steel": _env_int("PING_ROLE_STEEL"),
         "Silver": _env_int("PING_ROLE_SILVER"),
         "Plat": _env_int("PING_ROLE_PLAT"),
