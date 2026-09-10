@@ -41,7 +41,9 @@ MIX_TEMPLATE = (
     "{host_roster_block}\n"
     "**MIX Team**\n"
     "{mix_roster_block}\n"
-    "> **SUBS**: {subs}\n"
+    "> \n"
+    "> **SUBS**:\n"
+    "{subs}\n"
     "-#  {ping_icon} *Please review the {rules_channel} before signing up.*"
 )
 
@@ -54,6 +56,8 @@ OPUG_TEMPLATE = (
     "> **HOSTER**: {hoster}\n"
     "{vc_lines}"
     "{roster_block}\n"
-    "> **SUBS**: {subs}\n"
+    "> \n"
+    "> **SUBS**:\n"
+    "{subs}\n"
     "-#  {ping_icon} *Please review the {rules_channel} before signing up.*"
 )

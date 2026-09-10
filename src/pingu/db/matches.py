@@ -342,25 +342,40 @@ async def set_channel_slot(match_id, slot):
         await db.commit()
 
 
-async def count_active_by_key(match_type, key_column, key_value):
+async def next_free_slot(match_type, key_column, key_value):
     """
-    Counts active (ended=0) matches of a given type sharing a distinguishing
-    key -- team_name for mix, division for opug. Called AFTER the current
-    match row already exists (ended=0 by default), so the count naturally
-    includes it -- the result IS the slot number to assign it (1 if it's
-    the only active one with that key, 2 if there's already one other
-    concurrently active, etc). Once assigned, a match's slot never changes,
-    even as later ones raise the count further.
+    Returns the LOWEST slot number not currently in use among active
+    (ended=0) matches of this type sharing a distinguishing key --
+    team_name for mix, division for opug. Deliberately NOT a raw count
+    of how many are active -- that breaks the moment matches don't
+    conclude in the same order they were created. Concretely: match A
+    (slot 1) and match B (slot 2) both active, A concludes first (still
+    ended=0 -> ended=1), B stays active. A new match C gets created --
+    a raw count of "currently active" finds exactly one (B), and assigns
+    slot 2 again, COLLIDING with B rather than noticing slot 1 is free.
+    This searches for the actual lowest unused number instead of just
+    counting, so C correctly gets slot 1 back.
+
+    Called AFTER the current match row already exists (ended=0, but its
+    own channel_slot is still NULL at this point -- set_channel_slot
+    hasn't run yet), so it's naturally excluded from the "used" set
+    without needing any special-casing for self. Once assigned, a
+    match's slot never changes, even as later ones fill other gaps.
     """
     if key_column not in ("team_name", "division"):
         raise ValueError(f"unexpected key_column: {key_column}")
     async with connect() as db:
         cur = await db.execute(
-            f"SELECT COUNT(*) FROM matches WHERE type=? AND ended=0 AND {key_column}=?",
+            f"SELECT channel_slot FROM matches WHERE type=? AND ended=0 AND {key_column}=? "
+            f"AND channel_slot IS NOT NULL",
             (match_type, key_value),
         )
-        row = await cur.fetchone()
-        return row[0] if row else 1
+        rows = await cur.fetchall()
+        used = {row[0] for row in rows}
+        slot = 1
+        while slot in used:
+            slot += 1
+        return slot
 
 
 async def set_category_id(match_id, category_id):

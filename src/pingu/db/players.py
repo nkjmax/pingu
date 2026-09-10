@@ -44,3 +44,13 @@ async def get_steamids_for_users(user_ids):
         )
         rows = await cur.fetchall()
         return {row["user_id"]: row["steamid64"] for row in rows}
+
+
+async def unlink_player(user_id) -> bool:
+    """Removes a player's linked logs.tf profile entirely (/unlink-logs).
+    Returns True if a row actually existed and was removed, False if
+    there was nothing to unlink."""
+    async with connect() as db:
+        cur = await db.execute("DELETE FROM players WHERE user_id = ?", (user_id,))
+        await db.commit()
+        return cur.rowcount > 0

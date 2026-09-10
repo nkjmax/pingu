@@ -10,6 +10,14 @@ from pingu import config
 PROFILE_RE = re.compile(r"logs\.tf/profile/(\d{17})")
 
 
+def _is_mod(interaction: discord.Interaction) -> bool:
+    if interaction.user.guild_permissions.administrator:
+        return True
+    if not config.MOD_ROLE_ID:
+        return False
+    return any(r.id == config.MOD_ROLE_ID for r in interaction.user.roles)
+
+
 class LinkingCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -59,6 +67,24 @@ class LinkingCog(commands.Cog):
         await interaction.response.send_message(
             f"{target.mention}'s logs.tf profile: {player['logs_tf_profile']}", ephemeral=True
         )
+
+    @app_commands.command(name="unlink-logs", description="Remove a player's linked logs.tf profile. Mod only.")
+    @app_commands.describe(user="Whose linked profile to remove")
+    async def unlink_logs(self, interaction: discord.Interaction, user: discord.Member):
+        if not _is_mod(interaction):
+            await interaction.response.send_message(
+                "\u274c You need to be a mod to use this.", ephemeral=True
+            )
+            return
+        removed = await players_db.unlink_player(user.id)
+        if removed:
+            await interaction.response.send_message(
+                f"\u2705 Removed {user.mention}'s linked logs.tf profile.", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"{user.mention} didn't have a linked profile.", ephemeral=True
+            )
 
 
 async def setup(bot):

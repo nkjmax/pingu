@@ -121,6 +121,40 @@ class SignOutClassPickerView(ui.View):
             await do_signout(interaction.client, self.match_id, self.user_id, class_name)
             await interaction.followup.send(f"You have been signed out of **{class_name}**.", ephemeral=True)
 
+async def _cascade_release_other_slots(client, match_id, user_id, keep_class, main_slot_count):
+    """
+    Called right after `user_id` gets promoted to (or otherwise lands on)
+    a main slot in `keep_class` -- releases every OTHER accepted signup
+    they hold, since landing on a main slot means no other signups
+    survive (confirmed design: at most one main slot, plus at most one
+    queued sub-class while locked -- landing on a NEW main clears both).
+
+    If a released signup was ITSELF a main slot elsewhere (not just a
+    queued sub entry), it's routed through do_signout recursively so
+    THAT class's own promotion cascade fires too -- a flat removal would
+    leave that class artificially short-handed even with someone
+    waiting, rather than the vacancy actually propagating.
+
+    main_slot_count is 2 for oPUG (top-2 accepted = main), 1 for mix
+    (first accepted = main) -- same cascading logic, just parametrized
+    for the two different "how many main slots per class" models.
+    """
+    other_rows = await signups_db.get_non_denied_signups_for_user(match_id, user_id)
+    for s in other_rows:
+        if s["class_name"] == keep_class or s["status"] != "accepted":
+            continue
+        other_accepted = await signups_db.get_accepted_signups_for_class(match_id, s["class_name"])
+        other_main_uids = [a["user_id"] for a in other_accepted[:main_slot_count]]
+        if user_id in other_main_uids:
+            # Was their main elsewhere -- recursive do_signout so that
+            # class's own cascade (promoting whoever's next there) fires.
+            await do_signout(client, match_id, user_id, s["class_name"])
+        else:
+            # Just a queued sub entry elsewhere -- no cascade needed,
+            # nobody else is promoted by removing a non-main entry.
+            await signups_db.remove_signup(match_id, user_id, s["class_name"])
+
+
 async def do_signout(client, match_id, user_id, class_name=None):
     if class_name:
         signup = await signups_db.get_signup_by_user_and_class(match_id, user_id, class_name)
@@ -169,10 +203,35 @@ async def do_signout(client, match_id, user_id, class_name=None):
                             )
                     except Exception:
                         pass
+
+                # Cascading release -- if newly_main already held a slot
+                # elsewhere (main or queued sub), it's cleared here,
+                # recursively cascading further if it was itself a main
+                # slot with its own waiting queue.
+                await _cascade_release_other_slots(client, match_id, newly_main["user_id"], class_name, main_slot_count=2)
+
+                if config.HOSTER_CHANNEL_ID:
+                    hoster_ch = client.get_channel(config.HOSTER_CHANNEL_ID)
+                    if hoster_ch:
+                        await hoster_ch.send(
+                            f"<@{match['created_by']}> \u26a0\ufe0f **{signup['username']}** has signed out of "
+                            f"**{class_name}** in <#{match['channel_id']}> ({match_label}). "
+                            f"**{newly_main['username']}** has been moved to the main roster."
+                        )
+            else:
+                if config.HOSTER_CHANNEL_ID:
+                    hoster_ch = client.get_channel(config.HOSTER_CHANNEL_ID)
+                    if hoster_ch:
+                        await hoster_ch.send(
+                            f"<@{match['created_by']}> \u26a0\ufe0f **{signup['username']}** has signed out of "
+                            f"**{class_name}** in <#{match['channel_id']}> ({match_label})."
+                        )
         else:
             next_sub = await signups_db.get_next_accepted_for_class(match_id, class_name, user_id)
             if next_sub:
-                await signups_db.remove_sub_slots_for_user(match_id, next_sub["user_id"], class_name)
+                # Cascading release -- same as opug's branch above, just
+                # main_slot_count=1 (mix: first accepted = main, not top-2).
+                await _cascade_release_other_slots(client, match_id, next_sub["user_id"], class_name, main_slot_count=1)
                 if match["thread_id"]:
                     try:
                         thread = client.get_channel(match["thread_id"])

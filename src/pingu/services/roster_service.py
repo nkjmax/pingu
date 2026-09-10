@@ -142,7 +142,7 @@ captain_deny_signup = captain_propose_deny
 LP_ACCEPT_LOCKOUT_SECONDS = 2 * 3600  # 2 hours
 
 
-async def finalise_accept(client, match_id, signup_id):
+async def finalise_accept(client, match_id, signup_id, skip_refresh=False):
     """
     Used by both a hoster's direct Accept button and the per-player
     captain-picks review. Marks the signup accepted, clears the player's
@@ -150,6 +150,15 @@ async def finalise_accept(client, match_id, signup_id):
     promotes them to the main roster, re-sorts the class for LP/priority
     order, pings them in the match thread, and schedules one debounced
     public refresh.
+
+    skip_refresh lets a bulk caller (commit_player_decisions/
+    commit_all_captain_decisions) suppress the refresh here and fire
+    exactly one afterward instead -- calling this once per player in a
+    loop each pushes its own refresh, and each iteration also does real
+    Discord API work (the thread ping below), which is often enough time
+    for the FIRST scheduled refresh to fire and flush mid-loop, rendering
+    a stale partial snapshot that nothing then corrects until some
+    unrelated action triggers a fresh refresh.
 
     Blocks accepting an LP player into a mix or opug (any variant) until
     within 2 hours of kickoff -- fresh pug is exempt entirely, since it
@@ -194,7 +203,8 @@ async def finalise_accept(client, match_id, signup_id):
         await signups_db.remove_pending_slots_for_user(match_id, user_id, class_name)
 
     await reorder_class_roster(client, match_id, class_name)
-    client.ui_updater.schedule_refresh(match_id)
+    if not skip_refresh:
+        client.ui_updater.schedule_refresh(match_id)
 
     accepted_after = await signups_db.get_accepted_signups_for_class(match_id, class_name)
     if is_opug:
@@ -215,7 +225,7 @@ async def finalise_accept(client, match_id, signup_id):
     return {"blocked": False, "class_name": class_name, "user_id": user_id, "on_main": on_main}
 
 
-async def finalise_deny(client, match_id, signup_id):
+async def finalise_deny(client, match_id, signup_id, skip_refresh=False):
     """
     Symmetric with finalise_accept, though simpler -- denying doesn't need
     accept's cleanup (there's nothing elsewhere to remove). Kept as its
@@ -225,7 +235,8 @@ async def finalise_deny(client, match_id, signup_id):
     if not current:
         return None
     await signups_db.finalise_signup(signup_id, "denied")
-    client.ui_updater.schedule_refresh(match_id)
+    if not skip_refresh:
+        client.ui_updater.schedule_refresh(match_id)
     return {"class_name": current["class_name"], "user_id": current["user_id"]}
 
 
@@ -251,11 +262,14 @@ async def get_captain_decisions_by_player(match_id):
     return by_player
 
 
-async def commit_player_decisions(client, match_id, user_id, ui_updater: UIUpdater):
+async def commit_player_decisions(client, match_id, user_id, ui_updater: UIUpdater, skip_refresh=False):
     """
     Commits everything a captain proposed for ONE player in one action --
     finalises their accept (if any) and every one of their deny proposals.
     This is the hoster's per-player "confirm" action.
+
+    skip_refresh lets commit_all_captain_decisions suppress the per-player
+    refresh and fire exactly one after its whole loop completes instead.
 
     Returns a list of blocked-accept info (empty if nothing was blocked)
     -- an LP player can't be accepted into a mix/opug until within 2
@@ -269,11 +283,14 @@ async def commit_player_decisions(client, match_id, user_id, ui_updater: UIUpdat
 
     blocked = []
     if entry["accept"]:
-        result = await finalise_accept(client, match_id, entry["accept"]["id"])
+        result = await finalise_accept(client, match_id, entry["accept"]["id"], skip_refresh=True)
         if result and result.get("blocked"):
             blocked.append(result)
     for row in entry["deny"]:
-        await finalise_deny(client, match_id, row["id"])
+        await finalise_deny(client, match_id, row["id"], skip_refresh=True)
+
+    if not skip_refresh:
+        client.ui_updater.schedule_refresh(match_id)
 
     return blocked
 
@@ -283,6 +300,15 @@ async def commit_all_captain_decisions(client, match_id, ui_updater: UIUpdater):
     'Approve all' -- commits every player's full proposed decision set
     (their accept AND their denies), not just a blanket bulk-accept.
 
+    Every individual commit suppresses its own refresh and this fires
+    exactly ONE afterward, once every player's writes are fully done --
+    without this, each player's finalise_accept call does real Discord
+    API work (a thread ping) that's often slow enough for the FIRST
+    scheduled refresh to fire and flush mid-loop, rendering a stale
+    partial snapshot (e.g. only the first player showing up on the
+    actual match post) that nothing then corrects until some unrelated
+    action happens to trigger a fresh refresh.
+
     Returns the combined list of blocked-accept info across every player
     processed, so the caller can tell the hoster which ones got skipped
     rather than the batch silently dropping them or failing outright.
@@ -290,10 +316,11 @@ async def commit_all_captain_decisions(client, match_id, ui_updater: UIUpdater):
     by_player = await get_captain_decisions_by_player(match_id)
     all_blocked = []
     for user_id in by_player:
-        all_blocked.extend(await commit_player_decisions(client, match_id, user_id, ui_updater))
+        all_blocked.extend(await commit_player_decisions(client, match_id, user_id, ui_updater, skip_refresh=True))
+    client.ui_updater.schedule_refresh(match_id)
     return all_blocked
 
-async def reject_player_decisions(client, match_id, user_id, ui_updater: UIUpdater):
+async def reject_player_decisions(client, match_id, user_id, ui_updater: UIUpdater, skip_refresh=False):
     """
     The hoster overrides everything the captain proposed for ONE player --
     rejects them across the board, regardless of whether the captain
@@ -309,11 +336,17 @@ async def reject_player_decisions(client, match_id, user_id, ui_updater: UIUpdat
 
     rows = ([entry["accept"]] if entry["accept"] else []) + entry["deny"]
     for row in rows:
-        await finalise_deny(client, match_id, row["id"])
+        await finalise_deny(client, match_id, row["id"], skip_refresh=True)
+
+    if not skip_refresh:
+        client.ui_updater.schedule_refresh(match_id)
 
 
 async def reject_all_captain_decisions(client, match_id, ui_updater: UIUpdater):
-    """'Reject all' -- rejects every player still awaiting review, overriding whatever their captain proposed."""
+    """'Reject all' -- rejects every player still awaiting review, overriding
+    whatever their captain proposed. Same single-refresh-after-the-whole-
+    loop fix as commit_all_captain_decisions, same underlying bug."""
     by_player = await get_captain_decisions_by_player(match_id)
     for user_id in by_player:
-        await reject_player_decisions(client, match_id, user_id, ui_updater)
+        await reject_player_decisions(client, match_id, user_id, ui_updater, skip_refresh=True)
+    client.ui_updater.schedule_refresh(match_id)

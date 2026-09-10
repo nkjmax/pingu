@@ -204,13 +204,16 @@ async def get_accepted_matches_for_user(user_id, exclude_match_id=None, referenc
     """
     Returns active matches where this user is accepted that clash with
     reference_timestamp -- a clash means the other match falls within
-    [ref_ts - 5400, ref_ts + 5400] (1.5h window each side).
+    [ref_ts - 3600, ref_ts + 3600] (1h window each side). Strict
+    inequality at the boundary (below), so two matches exactly 1 hour
+    apart (e.g. 8:00 and 9:00) do NOT count as clashing -- only a gap
+    genuinely under 1 hour does.
     """
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         if reference_timestamp is not None:
-            window_start = reference_timestamp - 5400
-            window_end = reference_timestamp + 5400
+            window_start = reference_timestamp - 3600
+            window_end = reference_timestamp + 3600
             async with db.execute(
                 """SELECT m.* FROM matches m
                    JOIN signups s ON s.match_id = m.id
