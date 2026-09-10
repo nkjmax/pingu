@@ -125,21 +125,27 @@ async def _start_roster_collection(bot, interaction, channel, match_id, is_sixs)
     notify them inside the channel they'll be typing in. Also stores
     channel_id immediately (rather than waiting for a roster to land, see
     matches_db.set_channel_id_only) and starts the deadline watch.
+
+    The instructions message's own ID is stored on _pending_roster too --
+    once the real match post goes up (main.py's on_message handler), that
+    handler deletes this prompt, since it's served its purpose and would
+    otherwise sit there permanently next to the finished match post.
     """
     await matches_db.set_channel_id_only(match_id, channel.id)
 
-    await channel.send(
+    instructions_msg = await channel.send(
         f"{interaction.user.mention} **post your host team roster here within 5 minutes** "
         f"or this channel will be automatically removed.\n\n"
         f"{roster_instructions_block(is_sixs=is_sixs)}"
     )
 
     bot._pending_roster[interaction.user.id] = {
-        "match_id":           match_id,
-        "channel_id":         channel.id,
-        "bot":                bot,
-        "expires":            time.time() + ROSTER_DEADLINE_SECONDS,
-        "roster_interaction": interaction,
+        "match_id":              match_id,
+        "channel_id":            channel.id,
+        "bot":                   bot,
+        "expires":               time.time() + ROSTER_DEADLINE_SECONDS,
+        "roster_interaction":    interaction,
+        "instructions_msg_id":   instructions_msg.id,
     }
 
     asyncio.create_task(

@@ -72,6 +72,22 @@ def _class_roster_block(cmap: dict, class_list: list, emoji_map: dict) -> str:
     return "\n".join(f"> {emoji_map[cls]}: {cmap.get(cls) or ''}" for cls in class_list)
 
 
+def _format_subs_block(sub_by_player: dict, class_list: list, emoji_map: dict) -> str:
+    """One '> @user - emoji, emoji, ...' line per sub, each person on
+    their own line, listing every class they're subbing for (someone can
+    sub multiple classes, e.g. Open For All's queue-while-full model).
+    Shared by mix/opug and their 6s variants for consistent formatting.
+    Empty -> single '> —' line."""
+    if not sub_by_player:
+        return "> \u2014"
+    entries = []
+    for p in sub_by_player.values():
+        p["classes"].sort(key=lambda c: class_list.index(c) if c in class_list else 99)
+        class_emojis = ", ".join(emoji_map[c] for c in p["classes"])
+        entries.append(f"> <@{p['user_id']}> - {class_emojis}")
+    return "\n".join(entries)
+
+
 def _parse_vc_ids(match) -> dict:
     """match['voice_channel_ids'] is a JSON blob (see db/matches.py) --
     empty dict if unset (e.g. VC category wasn't configured at creation,
@@ -124,12 +140,7 @@ def build_mix_message(match, signups, pug_role_id=None):
     host_roster_block = _class_roster_block(host_map, TF2_CLASSES, CLASS_EMOJI)
     mix_roster_block  = _class_roster_block(mix_starters, TF2_CLASSES, CLASS_EMOJI)
 
-    subs_entries = []
-    for p in sub_by_player.values():
-        p["classes"].sort(key=lambda c: TF2_CLASSES.index(c) if c in TF2_CLASSES else 99)
-        class_emojis = ", ".join(CLASS_EMOJI[c] for c in p["classes"])
-        subs_entries.append(f"<@{p['user_id']}> - {class_emojis}")
-    subs = "\n> ".join(subs_entries) if subs_entries else "\u2014"
+    subs = _format_subs_block(sub_by_player, TF2_CLASSES, CLASS_EMOJI)
 
     captain_line = f"> **CAPTAIN**: <@{match['captain_id']}>\n" if match["captain_id"] else ""
 
@@ -374,13 +385,16 @@ def build_opug_message(match, signups, pug_role_id=None):
     header   = OPUG_HEADER.get(division, "PUG")
 
     slots = {cls: [] for cls in TF2_CLASSES}
-    subs  = []
+    sub_by_player = {}
     for s in signups:
         if s["status"] == "accepted":
             if len(slots[s["class_name"]]) < 2:
                 slots[s["class_name"]].append(f"<@{s['user_id']}>")
             else:
-                subs.append(f"<@{s['user_id']}>")
+                uid = s["user_id"]
+                if uid not in sub_by_player:
+                    sub_by_player[uid] = {"user_id": uid, "classes": []}
+                sub_by_player[uid]["classes"].append(s["class_name"])
 
     roster_lines = []
     for cls in TF2_CLASSES:
@@ -391,7 +405,7 @@ def build_opug_message(match, signups, pug_role_id=None):
         roster_lines.append(f"> {emoji}  : {slot2}")
     roster_block = "\n".join(roster_lines)
 
-    subs_str = " ".join(subs) if subs else "\u2014"
+    subs_str = _format_subs_block(sub_by_player, TF2_CLASSES, CLASS_EMOJI)
 
     vc_ids = _parse_vc_ids(match)
     vc_lines = ""
@@ -494,13 +508,16 @@ def build_6s_opug_message(match, signups, pug_role_id=None):
     header   = SIXS_OPUG_HEADER.get(division, "PUG")
 
     slots = {cls: [] for cls in SIXS_CLASSES}
-    subs  = []
+    sub_by_player = {}
     for s in signups:
         if s["status"] == "accepted":
             if len(slots[s["class_name"]]) < 2:
                 slots[s["class_name"]].append(f"<@{s['user_id']}>")
             else:
-                subs.append(f"<@{s['user_id']}>")
+                uid = s["user_id"]
+                if uid not in sub_by_player:
+                    sub_by_player[uid] = {"user_id": uid, "classes": []}
+                sub_by_player[uid]["classes"].append(s["class_name"])
 
     roster_lines = []
     for cls in SIXS_CLASSES:
@@ -511,7 +528,7 @@ def build_6s_opug_message(match, signups, pug_role_id=None):
         roster_lines.append(f"> {emoji} : {slot2}")
     roster_block = "\n".join(roster_lines)
 
-    subs_str = " ".join(subs) if subs else "\u2014"
+    subs_str = _format_subs_block(sub_by_player, SIXS_CLASSES, SIXS_CLASS_EMOJI)
 
     vc_ids = _parse_vc_ids(match)
     vc_lines = ""
@@ -576,12 +593,7 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
     host_roster_block = _class_roster_block(host_map, SIXS_CLASSES, SIXS_CLASS_EMOJI)
     mix_roster_block  = _class_roster_block(mix_starters, SIXS_CLASSES, SIXS_CLASS_EMOJI)
 
-    subs_entries = []
-    for p in sub_by_player.values():
-        p["classes"].sort(key=lambda c: SIXS_CLASSES.index(c) if c in SIXS_CLASSES else 99)
-        class_emojis = ", ".join(SIXS_CLASS_EMOJI[c] for c in p["classes"])
-        subs_entries.append(f"<@{p['user_id']}> - {class_emojis}")
-    subs = "\n> ".join(subs_entries) if subs_entries else "\u2014"
+    subs = _format_subs_block(sub_by_player, SIXS_CLASSES, SIXS_CLASS_EMOJI)
 
     captain_line = f"> **CAPTAIN**: <@{match['captain_id']}>\n" if match["captain_id"] else ""
 

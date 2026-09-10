@@ -130,9 +130,9 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
         vc_category = None
 
     if match_type in ("mix", "6s_mix"):
-        slot = await matches_db.count_active_by_key(match_type, "team_name", team_name)
+        slot = await matches_db.next_free_slot(match_type, "team_name", team_name)
     elif match_type in ("opug", "6s_opug"):
-        slot = await matches_db.count_active_by_key(match_type, "division", division)
+        slot = await matches_db.next_free_slot(match_type, "division", division)
     else:
         slot = 1
     await matches_db.set_channel_slot(match_id, slot)
