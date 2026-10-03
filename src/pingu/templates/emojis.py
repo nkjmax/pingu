@@ -5,16 +5,28 @@ without touching any message-building logic.
 """
 
 # TF2 classes (Highlander)
+# CLASS_EMOJI = {
+#     "Scout":    "<:tf_scout:1536052419564150874>",
+#     "Soldier":  "<:tf_soldier:1536052610279153734>",
+#     "Pyro":     "<:tf_pyro:1536052640088064091>",
+#     "Demoman":  "<:tf_demo:1536052673466470430>",
+#     "Heavy":    "<:tf_heavy:1536052704785342535>",
+#     "Engineer": "<:tf_engineer:1536052742131425370>",
+#     "Medic":    "<:tf_medic:1536052768161140757>",
+#     "Sniper":   "<:tf_sniper:1536052799077621821>",
+#     "Spy":      "<:tf_spy:1536052825879224460>",
+# }
+# TF2 classes (Highlander) -- spooky Halloween versions
 CLASS_EMOJI = {
-    "Scout":    "<:tf_scout:1536052419564150874>",
-    "Soldier":  "<:tf_soldier:1536052610279153734>",
-    "Pyro":     "<:tf_pyro:1536052640088064091>",
-    "Demoman":  "<:tf_demo:1536052673466470430>",
-    "Heavy":    "<:tf_heavy:1536052704785342535>",
-    "Engineer": "<:tf_engineer:1536052742131425370>",
-    "Medic":    "<:tf_medic:1536052768161140757>",
-    "Sniper":   "<:tf_sniper:1536052799077621821>",
-    "Spy":      "<:tf_spy:1536052825879224460>",
+    "Scout":    "<:spooky_scout:1555567028742660167>",
+    "Soldier":  "<:spooky_solly:1555567145780514876>",
+    "Pyro":     "<:spooky_pyro:1555567228320227533>",
+    "Demoman":  "<:spooky_demoman:1555567307944759326>",
+    "Heavy":    "<:spooky_heavy:1555573523307696128>",
+    "Engineer": "<:spooky_engineer:1555567395706376305>",
+    "Medic":    "<:spooky_medic:1555567459833094195>",
+    "Sniper":   "<:spooky_sniper:1555567534550425630>",
+    "Spy":      "<:spooky_spy:1555567615777443912>",
 }
 
 # TF2 classes (6s)
