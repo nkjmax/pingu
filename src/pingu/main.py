@@ -158,6 +158,63 @@ bot.ongoing_channel = config.ONGOING_CHANNEL_ID
 bot._pending_roster = {}  # user_id -> {channel_id, match_id, expires, edit_class}
 
 
+async def _reregister_persistent_views():
+    """
+    Discord buttons only stay clickable for as long as the specific View
+    object that sent them exists in memory -- a bot restart wipes every
+    view from the previous process, mix and opug and fresh pug alike.
+    Without this, every button on every match message posted before a
+    restart silently stops responding ("didn't respond in time") until
+    something ELSE happens to refresh that specific message and
+    incidentally re-attaches a fresh view -- which is why this looked
+    inconsistent across matches rather than uniformly broken: it was
+    really about which messages had gotten touched by something since
+    the restart, nothing to do with match type specifically.
+
+    message_id is passed to add_view() so each reconstructed view binds
+    to its own specific message, rather than relying purely on globally
+    unique custom_ids across every registered view.
+    """
+    from pingu.views.signup_views import SignupView, SixsSignupView, OPugSignupView, OpenForAllSignupView
+    from pingu.views.fresh_pug_manage_views import FreshPugSignupView
+
+    matches = await matches_db.get_all_active_matches()
+    count = 0
+    for match in matches:
+        if not match["message_id"]:
+            continue
+
+        match_type = match["type"]
+        division = match["division"]
+
+        try:
+            if match_type == "mix":
+                view = SignupView(match["id"])
+            elif match_type == "6s_mix":
+                view = SixsSignupView(match["id"])
+            elif match_type == "opug":
+                if division == "Open For All":
+                    view = OpenForAllSignupView(match["id"], is_sixs=False)
+                else:
+                    view = OPugSignupView(match["id"])
+            elif match_type == "6s_opug":
+                if division == "Open For All":
+                    view = OpenForAllSignupView(match["id"], is_sixs=True)
+                else:
+                    view = SixsSignupView(match["id"])
+            elif match_type in ("fresh_pug", "6s_fresh_pug"):
+                view = FreshPugSignupView(match["id"])
+            else:
+                continue
+
+            bot.add_view(view, message_id=match["message_id"])
+            count += 1
+        except Exception as e:
+            log.warning(f"Failed to re-register view for match #{match['id']} ({match_type}): {e}")
+
+    log.info(f"Re-registered persistent views for {count} active match(es).")
+
+
 @bot.event
 async def setup_hook():
     await db.init_db()
@@ -168,6 +225,7 @@ async def setup_hook():
             log.info(f"Loaded {cog}")
         except Exception as e:
             log.exception(f"Failed to load {cog}")
+    await _reregister_persistent_views()
 
 
 @bot.event
