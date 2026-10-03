@@ -41,7 +41,8 @@ SIXS_CLASS_EMOJI = {
 
 # Standalone icons used in message headers/sections
 PINGUU_ICON      = "<:pinguu:1538932246675722240>"       # fresh pug header
-PINGU_HAPPY_ICON = "<:pingu_happy:1535331544091070504>"  # mix/opug header
+# PINGU_HAPPY_ICON = "<:pingu_happy:1535331544091070504>"  # mix/opug header
+PINGU_HAPPY_ICON = "<:spooky_pingu:1555567715501084712>"  # spooky mix/opug header
 PING_ICON        = "<:ping:1541356316658892860>"         # section markers
 FRESH_PUG_JOIN_EMOJI = "\U0001f427"                       # 🐧 -- fresh pug sign-up button + "click to join" text
 ALL_CLASSES_EMOJI = "<:teamfortress:1546962285593890856>"  # the "All" sign-up button (mix/opug and Open For All alike)
