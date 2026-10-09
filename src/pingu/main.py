@@ -278,7 +278,7 @@ async def on_message(message):
     from pingu.embeds import (
         build_mix_message, build_6s_mix_message, build_opug_message,
         build_6s_opug_message, build_pending_message, build_denied_message,
-        TF2_CLASSES, SIXS_CLASSES, CLASS_EMOJI, SIXS_CLASS_EMOJI,
+        build_subs_message, TF2_CLASSES, SIXS_CLASSES, CLASS_EMOJI, SIXS_CLASS_EMOJI,
     )
     # Not yet ported (see module docstring) -- these two land with the
     # schedule.py / views.py port that follows this file.
@@ -385,6 +385,9 @@ async def on_message(message):
                 await old_instructions.delete()
             except Exception:
                 pass
+
+        subs_msg = await channel.send(content=build_subs_message(match, signups))
+        await matches_db.set_subs_msg_id(match["id"], subs_msg.id)
 
         if match["type"] in ("mix", "6s_mix"):
             pending_msg = await channel.send(content=build_pending_message(match, signups))
