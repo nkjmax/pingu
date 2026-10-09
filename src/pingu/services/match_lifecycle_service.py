@@ -18,12 +18,91 @@ log = logging.getLogger("match_lifecycle_service")
 
 from pingu.embeds import (
     build_mix_message, build_match_embed, build_pending_message, build_denied_message,
-    build_archive_message, match_label,
+    build_archive_message, match_label, build_subs_message,
 )
 from pingu import config
 from pingu.db import matches as matches_db
 from pingu.db import signups as signups_db
 from pingu.services import channel_service
+
+
+_subs_locks: dict = {}
+
+
+async def _refresh_secondary_messages(client, match_id, match, signups):
+    """
+    Order in the channel: main post -> SUBS -> pending -> denied.
+    Open For All has no pending/denied, so there it's main -> SUBS.
+
+    If a match has no subs message yet (matches that were already live
+    before this feature existed), one is created here. Discord can't
+    insert a message between two existing ones, so for matches that have
+    pending/denied messages those are deleted and reposted after the new
+    subs message to restore the order. Done once per match -- afterwards
+    subs_msg_id is set and this is just a plain edit.
+    """
+    channel = client.get_channel(match["channel_id"])
+    if not channel:
+        return
+
+    # Re-read: another refresh may have created the subs message while
+    # this one was waiting on the lock.
+    match = await matches_db.get_match(match_id) or match
+
+    subs_text = build_subs_message(match, signups)
+    subs_ok = False
+    if match["subs_msg_id"]:
+        try:
+            smsg = await channel.fetch_message(match["subs_msg_id"])
+            await smsg.edit(content=subs_text)
+            subs_ok = True
+        except discord.NotFound:
+            subs_ok = False  # deleted by hand -- recreate below
+        except Exception as e:
+            log.warning(f"refresh_message (subs) failed for match #{match_id}: {e}")
+            subs_ok = True   # transient error: don't spawn a duplicate
+
+    pending_msg_id = match["pending_msg_id"]
+    denied_msg_id  = match["denied_msg_id"]
+
+    if not subs_ok:
+        try:
+            new_subs = await channel.send(content=subs_text)
+            await matches_db.set_subs_msg_id(match_id, new_subs.id)
+        except Exception as e:
+            log.warning(f"refresh_message (subs create) failed for match #{match_id}: {e}")
+            return
+
+        # Repost pending/denied below the new subs message.
+        if pending_msg_id or denied_msg_id:
+            for old_id in (pending_msg_id, denied_msg_id):
+                if old_id:
+                    try:
+                        old = await channel.fetch_message(old_id)
+                        await old.delete()
+                    except Exception:
+                        pass
+            try:
+                pmsg = await channel.send(content=build_pending_message(match, signups))
+                dmsg = await channel.send(content=build_denied_message(match, signups))
+                await matches_db.set_pending_msg_id(match_id, pmsg.id)
+                await matches_db.set_denied_msg_id(match_id, dmsg.id)
+            except Exception as e:
+                log.warning(f"refresh_message (repost pending/denied) failed for match #{match_id}: {e}")
+        return
+
+    if pending_msg_id:
+        try:
+            pmsg = await channel.fetch_message(pending_msg_id)
+            await pmsg.edit(content=build_pending_message(match, signups))
+        except Exception as e:
+            log.warning(f"refresh_message (pending) failed for match #{match_id}: {e}")
+    if denied_msg_id:
+        try:
+            dmsg = await channel.fetch_message(denied_msg_id)
+            await dmsg.edit(content=build_denied_message(match, signups))
+        except Exception as e:
+            log.warning(f"refresh_message (denied) failed for match #{match_id}: {e}")
 
 
 async def refresh_message(client, match_id):
@@ -58,23 +137,8 @@ async def refresh_message(client, match_id):
         )
 
     if match["type"] in ("mix", "6s_mix", "opug", "6s_opug"):
-        channel = client.get_channel(match["channel_id"])
-        if channel:
-            pending_msg_id = match["pending_msg_id"]
-            denied_msg_id = match["denied_msg_id"]
-
-            if pending_msg_id:
-                try:
-                    pmsg = await channel.fetch_message(pending_msg_id)
-                    await pmsg.edit(content=build_pending_message(match, signups))
-                except Exception as e:
-                    log.warning(f"refresh_message (pending) failed for match #{match_id}: {e}")
-            if denied_msg_id:
-                try:
-                    dmsg = await channel.fetch_message(denied_msg_id)
-                    await dmsg.edit(content=build_denied_message(match, signups))
-                except Exception as e:
-                    log.warning(f"refresh_message (denied) failed for match #{match_id}: {e}")
+        async with _subs_locks.setdefault(match_id, asyncio.Lock()):
+            await _refresh_secondary_messages(client, match_id, match, signups)
 
     try:
         from pingu.cogs.hosting import refresh_ongoing_line
@@ -386,7 +450,7 @@ async def _disable_live_messages(client, match):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
-    for key in ("pending_msg_id", "denied_msg_id"):
+    for key in ("subs_msg_id", "pending_msg_id", "denied_msg_id"):
         if match[key]:
             try:
                 msg = await channel.fetch_message(match[key])

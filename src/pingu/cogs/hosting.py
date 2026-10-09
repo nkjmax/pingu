@@ -27,7 +27,7 @@ from pingu.embeds import (
     build_mix_message, build_match_embed, build_ongoing_line, build_fresh_pug_message, build_opug_message,
     build_6s_fresh_pug_message, build_6s_opug_message, build_6s_mix_message,
     FP_DIVISIONS, OPUG_DIVISIONS, SIXS_OPUG_DIVISIONS, SIXS_DIVISIONS, SIXS_CLASSES, SIXS_CLASS_EMOJI,
-    build_archive_message, DIVISIONS, TF2_CLASSES, CLASS_EMOJI, build_pending_message, build_denied_message,
+    build_archive_message, DIVISIONS, TF2_CLASSES, CLASS_EMOJI, build_pending_message, build_denied_message, build_subs_message,
     build_fresh_pug_signup_list,
 )
 
@@ -1081,6 +1081,9 @@ class OPugModal(ui.Modal, title="Schedule an Organised PUG"):
         msg     = await channel.send(content=content, view=view)
         await matches_db.set_message_id(match_id, msg.id, channel.id)
 
+        subs_msg = await channel.send(content=build_subs_message(match, []))
+        await matches_db.set_subs_msg_id(match_id, subs_msg.id)
+
         if self.division != "Open For All":
             # Open For All has no pending/denied concept at all -- every
             # signup goes straight to accepted via try_direct_accept, so
@@ -1254,6 +1257,9 @@ class SixsOPugModal(ui.Modal, title="Schedule a 6s Organised PUG"):
             view = SixsSignupView(match_id)
         msg     = await channel.send(content=content, view=view)
         await matches_db.set_message_id(match_id, msg.id, channel.id)
+
+        subs_msg = await channel.send(content=build_subs_message(match, []))
+        await matches_db.set_subs_msg_id(match_id, subs_msg.id)
 
         if self.division != "Open For All":
             pending_msg = await channel.send(content=build_pending_message(match, []))

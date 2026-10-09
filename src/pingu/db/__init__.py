@@ -31,6 +31,7 @@ _NEW_MATCHES_COLUMNS = [
     ("ongoing_delete_at", "INTEGER"),
     ("channel_slot", "INTEGER"),
     ("voice_channel_ids", "TEXT"),
+    ("subs_msg_id", "INTEGER"),
 ]
 
 # host_requests is a new table (not retrofitted from the original bot), but

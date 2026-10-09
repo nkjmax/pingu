@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS matches (
     ping_msg_id         INTEGER,
     signup_list_msg_id  INTEGER,
     roster_edit_msg_id  INTEGER,
+    subs_msg_id         INTEGER,   -- separate SUBS message, sits between main post and pending/denied
     team_split          TEXT,
     voice_channel_ids   TEXT,  -- JSON: {"vc": id} for mix, {"red": id, "blu": id} for opug,
                                 -- {"waiting_room": id, "fresh_lobby": id, "fresh_red": id, "fresh_blu": id} for fresh pug
@@ -171,6 +172,12 @@ async def set_pending_msg_id(match_id, msg_id):
 async def set_denied_msg_id(match_id, msg_id):
     async with connect() as db:
         await db.execute("UPDATE matches SET denied_msg_id=? WHERE id=?", (msg_id, match_id))
+        await db.commit()
+
+
+async def set_subs_msg_id(match_id, msg_id):
+    async with connect() as db:
+        await db.execute("UPDATE matches SET subs_msg_id=? WHERE id=?", (msg_id, match_id))
         await db.commit()
 
 

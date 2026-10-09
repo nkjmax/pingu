@@ -140,8 +140,6 @@ def build_mix_message(match, signups, pug_role_id=None):
     host_roster_block = _class_roster_block(host_map, TF2_CLASSES, CLASS_EMOJI)
     mix_roster_block  = _class_roster_block(mix_starters, TF2_CLASSES, CLASS_EMOJI)
 
-    subs = _format_subs_block(sub_by_player, TF2_CLASSES, CLASS_EMOJI)
-
     captain_line = f"> **CAPTAIN**: <@{match['captain_id']}>\n" if match["captain_id"] else ""
 
     vc_ids = _parse_vc_ids(match)
@@ -154,8 +152,41 @@ def build_mix_message(match, signups, pug_role_id=None):
         division=division, pug_ping=pug_ping, map_name=map_name, server=server,
         hoster=hoster, captain_line=captain_line, vc_line=vc_line,
         host_roster_block=host_roster_block, mix_roster_block=mix_roster_block,
-        subs=subs, ping_icon=PING_ICON, rules_channel=rules_channel,
+        ping_icon=PING_ICON, rules_channel=rules_channel,
     )
+
+
+def build_subs_message(match, signups):
+    """
+    Separate SUBS message, posted right after the main match post and
+    before the pending/denied messages (see refresh_message). Always
+    exists, even when empty ('> —'), so its message ID is stable.
+
+    A signup is a sub when it's accepted and the class already has its
+    main slot(s) filled by earlier accepted signups: 1 per class for
+    mix/6s mix, 2 per class for oPUG/6s oPUG (same rule the main post
+    used to apply inline).
+    """
+    is_sixs   = match["type"] in ("6s_mix", "6s_opug")
+    is_opug   = match["type"] in ("opug", "6s_opug")
+    cls_list  = SIXS_CLASSES if is_sixs else TF2_CLASSES
+    emoji_map = SIXS_CLASS_EMOJI if is_sixs else CLASS_EMOJI
+    cap       = 2 if is_opug else 1
+
+    taken = {c: 0 for c in cls_list}
+    sub_by_player = {}
+    for s in signups:
+        if s["status"] != "accepted" or s["class_name"] not in taken:
+            continue
+        if taken[s["class_name"]] < cap:
+            taken[s["class_name"]] += 1
+        else:
+            uid = s["user_id"]
+            if uid not in sub_by_player:
+                sub_by_player[uid] = {"user_id": uid, "classes": []}
+            sub_by_player[uid]["classes"].append(s["class_name"])
+
+    return "> **SUBS**:\n" + _format_subs_block(sub_by_player, cls_list, emoji_map)
 
 
 def build_pending_message(match, signups):
@@ -405,8 +436,6 @@ def build_opug_message(match, signups, pug_role_id=None):
         roster_lines.append(f"> {emoji}  : {slot2}")
     roster_block = "\n".join(roster_lines)
 
-    subs_str = _format_subs_block(sub_by_player, TF2_CLASSES, CLASS_EMOJI)
-
     vc_ids = _parse_vc_ids(match)
     vc_lines = ""
     if vc_ids.get("red"):
@@ -420,7 +449,7 @@ def build_opug_message(match, signups, pug_role_id=None):
         header_icon=PINGU_HAPPY_ICON, header=header, date_time=ts_line,
         division=division, pug_ping=pug_ping, map_name=map_name, server=server,
         hoster=hoster, vc_lines=vc_lines, roster_block=roster_block,
-        subs=subs_str, ping_icon=PING_ICON, rules_channel=rules_channel,
+        ping_icon=PING_ICON, rules_channel=rules_channel,
     )
 
     # Not part of the pasted template, but not something asked to be
@@ -528,8 +557,6 @@ def build_6s_opug_message(match, signups, pug_role_id=None):
         roster_lines.append(f"> {emoji} : {slot2}")
     roster_block = "\n".join(roster_lines)
 
-    subs_str = _format_subs_block(sub_by_player, SIXS_CLASSES, SIXS_CLASS_EMOJI)
-
     vc_ids = _parse_vc_ids(match)
     vc_lines = ""
     if vc_ids.get("red"):
@@ -543,7 +570,7 @@ def build_6s_opug_message(match, signups, pug_role_id=None):
         header_icon=PINGU_HAPPY_ICON, header=header, date_time=ts_line,
         division=division, pug_ping=pug_ping, map_name=map_name, server=server,
         hoster=hoster, vc_lines=vc_lines, roster_block=roster_block,
-        subs=subs_str, ping_icon=PING_ICON, rules_channel=rules_channel,
+        ping_icon=PING_ICON, rules_channel=rules_channel,
     )
 
     # Not part of the pasted template, but not something asked to be
@@ -593,8 +620,6 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
     host_roster_block = _class_roster_block(host_map, SIXS_CLASSES, SIXS_CLASS_EMOJI)
     mix_roster_block  = _class_roster_block(mix_starters, SIXS_CLASSES, SIXS_CLASS_EMOJI)
 
-    subs = _format_subs_block(sub_by_player, SIXS_CLASSES, SIXS_CLASS_EMOJI)
-
     captain_line = f"> **CAPTAIN**: <@{match['captain_id']}>\n" if match["captain_id"] else ""
 
     vc_ids = _parse_vc_ids(match)
@@ -607,7 +632,7 @@ def build_6s_mix_message(match, signups, pug_role_id=None):
         division=division, pug_ping=pug_ping, map_name=map_name, server=server,
         hoster=hoster, captain_line=captain_line, vc_line=vc_line,
         host_roster_block=host_roster_block, mix_roster_block=mix_roster_block,
-        subs=subs, ping_icon=PING_ICON, rules_channel=rules_channel,
+        ping_icon=PING_ICON, rules_channel=rules_channel,
     )
 
 
