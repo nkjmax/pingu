@@ -18,15 +18,15 @@ without touching any message-building logic.
 # }
 # TF2 classes (Highlander) -- spooky Halloween versions
 CLASS_EMOJI = {
-    "Scout":    "<:spooky_scout:1555567028742660167>",
-    "Soldier":  "<:spooky_solly:1555567145780514876>",
-    "Pyro":     "<:spooky_pyro:1555567228320227533>",
-    "Demoman":  "<:spooky_demoman:1555567307944759326>",
-    "Heavy":    "<:spooky_heavy:1555573523307696128>",
-    "Engineer": "<:spooky_engineer:1555567395706376305>",
-    "Medic":    "<:spooky_medic:1555567459833094195>",
-    "Sniper":   "<:spooky_sniper:1555567534550425630>",
-    "Spy":      "<:spooky_spy:1555567615777443912>",
+    "Scout":    "<:spooky_scout:1559555533428625449>",
+    "Soldier":  "<:spooky_solly:1559555482400718848>",
+    "Pyro":     "<:spooky_pyro:1559555435193704478>",
+    "Demoman":  "<:spooky_demoman:1559555398741131395>",
+    "Heavy":    "<:spooky_heavy:1559555204469493771>",
+    "Engineer": "<:spooky_engineer:1559555365757255761>",
+    "Medic":    "<:spooky_medic:1559555321637380176>",
+    "Sniper":   "<:spooky_sniper:1559555287659192320>",
+    "Spy":      "<:spooky_spy:1559555240624259153>",
 }
 
 # TF2 classes (6s)
