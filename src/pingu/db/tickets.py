@@ -78,11 +78,24 @@ async def create_ticket(category_code: str, user_id, category, subcategory, tick
         ticket_number = await _next_ticket_number(category_code)
         try:
             async with connect() as db:
-                cur = await db.execute(
-                    "INSERT INTO tickets (ticket_number, user_id, category, subcategory, "
-                    "ticket_type, type, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (ticket_number, user_id, category, subcategory, ticket_type, ticket_type, body, int(time.time())),
-                )
+                # Only write the legacy `type` column if this DB actually
+                # has it -- a DB created fresh from the current schema
+                # doesn't, and a hardcoded insert fails there with
+                # "table tickets has no column named type".
+                cur = await db.execute("PRAGMA table_info(tickets)")
+                cols = {row[1] for row in await cur.fetchall()}
+                if "type" in cols:
+                    cur = await db.execute(
+                        "INSERT INTO tickets (ticket_number, user_id, category, subcategory, "
+                        "ticket_type, type, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (ticket_number, user_id, category, subcategory, ticket_type, ticket_type, body, int(time.time())),
+                    )
+                else:
+                    cur = await db.execute(
+                        "INSERT INTO tickets (ticket_number, user_id, category, subcategory, "
+                        "ticket_type, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (ticket_number, user_id, category, subcategory, ticket_type, body, int(time.time())),
+                    )
                 await db.commit()
                 return cur.lastrowid, ticket_number
         except aiosqlite.IntegrityError as e:
