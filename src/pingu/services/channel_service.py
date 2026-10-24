@@ -35,12 +35,31 @@ Everyone else can view, but only gets to type in the thread underneath it
 this is enough on its own without touching thread permissions.
 """
 
+import logging
 import re
 import discord
 
 from pingu import config
 from pingu.db import matches as matches_db
 from pingu.templates.emojis import MATCH_CHANNEL_PREFIX
+
+log = logging.getLogger("channel_service")
+
+
+VC_REGION = "singapore"  # Discord rtc_region ID; None/"auto" would mean automatic
+
+
+async def _create_vc(vc_category: discord.CategoryChannel, **kwargs):
+    """
+    Creates a voice channel pinned to VC_REGION. If Discord rejects the
+    region (bad ID, region retired), retries once with automatic region
+    so a region problem can never stop a match from being created.
+    """
+    try:
+        return await vc_category.create_voice_channel(rtc_region=VC_REGION, **kwargs)
+    except discord.HTTPException as e:
+        log.warning(f"VC creation with rtc_region={VC_REGION!r} failed ({e}); retrying with automatic region")
+        return await vc_category.create_voice_channel(**kwargs)
 
 
 def category_id_for_type(match_type: str):
@@ -146,7 +165,7 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
         overwrites = _mix_opug_overwrites(guild)
         text_channel = await category.create_text_channel(name=label, overwrites=overwrites)
         if vc_category:
-            vc = await vc_category.create_voice_channel(name=label, user_limit=99)
+            vc = await _create_vc(vc_category, name=label, user_limit=99)
             vc_ids["vc"] = vc.id
     elif match_type in ("opug", "6s_opug"):
         overwrites = _mix_opug_overwrites(guild)
@@ -154,8 +173,8 @@ async def create_match_channels(guild: discord.Guild, match_id: int, match_type:
         div_slug = _slug(division or "pug")
         slot_suffix = f"-{slot}" if slot > 1 else ""
         if vc_category:
-            red_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-red{slot_suffix}", user_limit=99)
-            blu_vc = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-blu{slot_suffix}", user_limit=99)
+            red_vc = await _create_vc(vc_category, name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-red{slot_suffix}", user_limit=99)
+            blu_vc = await _create_vc(vc_category, name=f"{MATCH_CHANNEL_PREFIX}{div_slug}-blu{slot_suffix}", user_limit=99)
             vc_ids["red"] = red_vc.id
             vc_ids["blu"] = blu_vc.id
     else:
@@ -196,10 +215,10 @@ async def _create_fresh_pug_channels(guild: discord.Guild, category: discord.Cat
 
     vc_ids = {}
     if vc_category:
-        waiting_room = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}waiting-room", user_limit=99)
-        fresh_lobby  = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-lobby", user_limit=99)
-        fresh_red    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-red", user_limit=99)
-        fresh_blu    = await vc_category.create_voice_channel(name=f"{MATCH_CHANNEL_PREFIX}fresh-blu", user_limit=99)
+        waiting_room = await _create_vc(vc_category, name=f"{MATCH_CHANNEL_PREFIX}waiting-room", user_limit=99)
+        fresh_lobby  = await _create_vc(vc_category, name=f"{MATCH_CHANNEL_PREFIX}fresh-lobby", user_limit=99)
+        fresh_red    = await _create_vc(vc_category, name=f"{MATCH_CHANNEL_PREFIX}fresh-red", user_limit=99)
+        fresh_blu    = await _create_vc(vc_category, name=f"{MATCH_CHANNEL_PREFIX}fresh-blu", user_limit=99)
         vc_ids = {
             "waiting_room": waiting_room.id,
             "fresh_lobby": fresh_lobby.id,
