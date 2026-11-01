@@ -98,7 +98,7 @@ _THEMES = {
             "Sniper":   "<:smissmas_sniper:1566481080268230756>",
             "Spy":      "<:smissmas_spy:1566481042691596378>",
         },
-        "PINGU_HAPPY_ICON": "<:pingu_happy:1535331544091070504>",
+        "PINGU_HAPPY_ICON": "<:smissmas_pingu:1566484871474450432>",
     },
 }
 
