@@ -88,17 +88,17 @@ _THEMES = {
     },
     "christmas": {
         "CLASS_EMOJI": {
-            "Scout":    "<:tf_scout:1536052419564150874>",
-            "Soldier":  "<:tf_soldier:1536052610279153734>",
-            "Pyro":     "<:tf_pyro:1536052640088064091>",
-            "Demoman":  "<:tf_demo:1536052673466470430>",
-            "Heavy":    "<:tf_heavy:1536052704785342535>",
-            "Engineer": "<:tf_engineer:1536052742131425370>",
-            "Medic":    "<:tf_medic:1536052768161140757>",
-            "Sniper":   "<:tf_sniper:1536052799077621821>",
-            "Spy":      "<:tf_spy:1536052825879224460>",
+            "Scout":    "<:smissmas_scout:1566481447651377244>",
+            "Soldier":  "<:smissmas_soldier:1566481384577695774>",
+            "Pyro":     "<:smissmas_pyro:1566481348745629836>",
+            "Demoman":  "<:smissmas_demoman:1566481310485315604>",
+            "Heavy":    "<:smissmas_heavy:1566481244814843974>",
+            "Engineer": "<:smissmas_engineer:1566481197897621542>",
+            "Medic":    "<:smissmas_medic:1566481122550878298>",
+            "Sniper":   "<:smissmas_sniper:1566481080268230756>",
+            "Spy":      "<:smissmas_spy:1566481042691596378>",
         },
-        "PINGU_HAPPY_ICON": "<:pingu_happy:1535331544091070504>",
+        "PINGU_HAPPY_ICON": "<:smissmas_pingu:1566484871474450432>",
     },
 }
 
